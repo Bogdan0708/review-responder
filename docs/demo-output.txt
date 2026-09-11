@@ -16,8 +16,8 @@ Review from Ionela (5★): "Best papanasi in town, hands down. The Example Bistr
   draft: "Thank you so much, Ionela! We're thrilled you enjoyed The Example Bistro and hope to see you again soon."
   approved + posted (responseId=resp-fixture-review-4)
 
-Review from Bogdan (1★): "Ordered the mici at The Example Bistro and they were cold. Asked for a remake and never got a follow up from staff."
-  draft: "Hi Bogdan, thank you for the honest feedback — we're sorry we fell short and would love the chance to make it right."
+Review from Radu (1★): "Ordered the mici at The Example Bistro and they were cold. Asked for a remake and never got a follow up from staff."
+  draft: "Hi Radu, thank you for the honest feedback — we're sorry we fell short and would love the chance to make it right."
   approved + posted (responseId=resp-fixture-review-5)
 
 --- Idempotency check: approving review 1 again must not publish twice ---
@@ -27,15 +27,15 @@ Second approve call for "fixture-review-1" returned alreadyPosted=true; google.r
 Rejected as expected: Actor "intern@example.com" with role "viewer" is not permitted to approve or publish responses
 
 --- Audit trail ---
-  [2026-09-11T11:12:49.368Z] response_approved reviewId=fixture-review-1 actor=owner@example.com
-  [2026-09-11T11:12:49.368Z] response_posted reviewId=fixture-review-1 actor=owner@example.com
-  [2026-09-11T11:12:49.369Z] response_approved reviewId=fixture-review-2 actor=owner@example.com
-  [2026-09-11T11:12:49.369Z] response_posted reviewId=fixture-review-2 actor=owner@example.com
-  [2026-09-11T11:12:49.370Z] response_approved reviewId=fixture-review-3 actor=owner@example.com
-  [2026-09-11T11:12:49.370Z] response_posted reviewId=fixture-review-3 actor=owner@example.com
-  [2026-09-11T11:12:49.370Z] response_approved reviewId=fixture-review-4 actor=owner@example.com
-  [2026-09-11T11:12:49.370Z] response_posted reviewId=fixture-review-4 actor=owner@example.com
-  [2026-09-11T11:12:49.371Z] response_approved reviewId=fixture-review-5 actor=owner@example.com
-  [2026-09-11T11:12:49.371Z] response_posted reviewId=fixture-review-5 actor=owner@example.com
+  [2026-09-11T11:35:42.259Z] response_approved reviewId=fixture-review-1 actor=owner@example.com
+  [2026-09-11T11:35:42.259Z] response_posted reviewId=fixture-review-1 actor=owner@example.com
+  [2026-09-11T11:35:42.261Z] response_approved reviewId=fixture-review-2 actor=owner@example.com
+  [2026-09-11T11:35:42.261Z] response_posted reviewId=fixture-review-2 actor=owner@example.com
+  [2026-09-11T11:35:42.264Z] response_approved reviewId=fixture-review-3 actor=owner@example.com
+  [2026-09-11T11:35:42.264Z] response_posted reviewId=fixture-review-3 actor=owner@example.com
+  [2026-09-11T11:35:42.267Z] response_approved reviewId=fixture-review-4 actor=owner@example.com
+  [2026-09-11T11:35:42.267Z] response_posted reviewId=fixture-review-4 actor=owner@example.com
+  [2026-09-11T11:35:42.269Z] response_approved reviewId=fixture-review-5 actor=owner@example.com
+  [2026-09-11T11:35:42.269Z] response_posted reviewId=fixture-review-5 actor=owner@example.com
 
 Done. 5 response(s) published via FakeGoogle.

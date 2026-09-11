@@ -28,6 +28,7 @@ export async function POST(
 
     // Publishing to Google is deferred to the background job
     // (postPendingGoogleResponses); this only records the approval.
+    // TODO(auth): derive role from session
     await approveAndPublish({
       reviewId: id,
       text: latestResponse.finalText ?? latestResponse.draftText,

@@ -48,3 +48,7 @@ next-env.d.ts
 
 # backups
 backups/
+
+# internal working notes (planning docs, agent review notes) - never public
+docs/reviews/
+docs/*-notes.md

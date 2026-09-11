@@ -19,7 +19,7 @@ Self-hosted AI-powered review response service for **Mitch from Transylvania**, 
 1. Reduce average review response time from days to hours
 2. Maintain authentic brand voice (Romanian hospitality warmth)
 3. Never auto-post responses to negative reviews without human approval
-4. Keep operational cost under $20/month (LLM API costs)
+4. Keep operational cost low (LLM API costs) via provider fallback, including a free local option
 5. Self-hosted, no vendor lock-in
 
 ## Non-Goals
@@ -128,7 +128,7 @@ Self-hosted AI-powered review response service for **Mitch from Transylvania**, 
 | Response generation latency | < 30 seconds |
 | Review ingestion delay | < 15 minutes from posting |
 | Data retention | 2 years minimum |
-| Concurrent users | 1-3 (Mitch + occasional staff) |
+| Concurrent users | 1-3 (owner + occasional additional users) |
 | Deployment | Docker Compose, single VPS |
 | Database | PostgreSQL 16 |
 | Security | API keys encrypted at rest, HTTPS, session auth |
@@ -162,7 +162,6 @@ Self-hosted AI-powered review response service for **Mitch from Transylvania**, 
 | Review response rate | > 90% of reviews get responses | Reviews with status "posted" / total reviews |
 | Average response time | < 12 hours | Time from review ingestion to response posted |
 | AI draft acceptance rate | > 70% approved without edits | Approved-as-is / total approved |
-| Monthly LLM cost | < $20 | API usage tracking |
 
 ---
 

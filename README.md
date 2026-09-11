@@ -27,6 +27,8 @@ It needs no accounts and no environment variables. Recorded output: [`docs/demo-
    - Rules: only `owner`/`manager` roles may approve or publish; a response that is already posted is never posted again (`google.reply` is not called a second time for it); a failed `google.reply` never marks a response posted; every approve/publish attempt writes an audit entry.
 5. The approve API route (`src/app/api/reviews/[id]/approve/route.ts`) calls `approveAndPublish` to record the approval; the background job (`postPendingGoogleResponses` in `src/lib/google/respond.ts`) calls the same module to publish approved-but-unposted responses to Google, so both paths share one set of invariants and one audit trail.
 
+**Access control:** the dashboard uses a single owner password, so the API treats every authenticated caller as `owner`; the role check in `approveAndPublish` is enforced in the module and tested, and becomes meaningful once multi-user auth is added.
+
 ## Entry points
 
 - `src/lib/ai/generate.ts` — provider-fallback draft generation

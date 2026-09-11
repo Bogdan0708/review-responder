@@ -123,18 +123,23 @@ export async function approveAndPublish(
   }
 
   let result: { ok: boolean };
+  let publishError: unknown = null;
   try {
     result = await google.reply(reviewId, text);
-  } catch {
+  } catch (err) {
+    publishError = err;
     result = { ok: false };
   }
 
   if (!result.ok) {
+    const error = publishError
+      ? String(publishError instanceof Error ? publishError.message : publishError)
+      : "google.reply returned ok:false";
     await store.writeAudit({
       reviewId,
       action: "response_post_failed",
       actor,
-      details: { responseId: response.id },
+      details: { responseId: response.id, error },
     });
     throw new Error(`Failed to publish response for review ${reviewId} to Google`);
   }

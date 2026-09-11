@@ -295,17 +295,6 @@ volumes:
 
 ---
 
-## Cost Estimates
-
-| Component | Monthly Cost |
-|-----------|--------------|
-| Claude API (~200 reviews × $0.003) | ~$5-10 |
-| VPS (self-hosted) | $5-10 |
-| Domain + SSL | ~$1 |
-| **Total** | **~$15-20/mo** |
-
----
-
 ## Future Considerations (v2)
 
 - Multi-language support (Romanian responses)

@@ -44,9 +44,35 @@ describe("approveAndPublish", () => {
 
     const response = await store.getLatestResponse("r3");
     expect(response?.postedAt).toBeNull();
-    expect(
-      store.audit.some((a) => a.reviewId === "r3" && a.action === "response_post_failed")
-    ).toBe(true);
+    const failureEntry = store.audit.find(
+      (a) => a.reviewId === "r3" && a.action === "response_post_failed"
+    );
+    expect(failureEntry).toBeDefined();
+    expect(failureEntry?.details).toMatchObject({
+      responseId: "resp-r3",
+      error: expect.any(String),
+    });
+  });
+
+  it("captures the thrown error's message in the audit detail when google.reply throws", async () => {
+    const store = seededStore();
+    const google = {
+      async reply(): Promise<{ ok: boolean }> {
+        throw new Error("Google API 503: temporarily unavailable");
+      },
+    };
+
+    await expect(
+      approveAndPublish({ reviewId: "r3", text: "Sorry to hear that.", actor: "owner@example.com", role: "owner", store, google })
+    ).rejects.toThrow(/Failed to publish/);
+
+    const failureEntry = store.audit.find(
+      (a) => a.reviewId === "r3" && a.action === "response_post_failed"
+    );
+    expect(failureEntry?.details).toMatchObject({
+      responseId: "resp-r3",
+      error: "Google API 503: temporarily unavailable",
+    });
   });
 
   it("writes an audit entry for both the approval and the publish", async () => {
