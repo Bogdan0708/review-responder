@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Review {
+  id          String   @id @default(uuid()) @db.Uuid
+  platform    String   @db.VarChar(20)
+  externalId  String   @map("external_id") @db.VarChar(255)
+  authorName  String?  @map("author_name") @db.VarChar(255)
+  rating      Int
+  reviewText  String   @map("review_text")
+  reviewDate  DateTime? @map("review_date") @db.Timestamptz()
+  ingestedAt  DateTime @default(now()) @map("ingested_at") @db.Timestamptz()
+  sentiment   String   @db.VarChar(10)
+  topics      Json     @default("[]")
+  status      String   @default("pending") @db.VarChar(20)
+
+  responses Response[]
+  auditLogs AuditLog[]
+
+  @@unique([platform, externalId])
+  @@index([status])
+  @@index([platform])
+  @@index([ingestedAt(sort: Desc)])
+  @@map("reviews")
+}
+
+model Response {
+  id          String    @id @default(uuid()) @db.Uuid
+  reviewId    String    @map("review_id") @db.Uuid
+  draftText   String    @map("draft_text")
+  finalText   String?   @map("final_text")
+  generatedAt DateTime  @default(now()) @map("generated_at") @db.Timestamptz()
+  approvedAt  DateTime? @map("approved_at") @db.Timestamptz()
+  postedAt    DateTime? @map("posted_at") @db.Timestamptz()
+  llmModel    String?   @map("llm_model") @db.VarChar(50)
+  llmTokensUsed Int?    @map("llm_tokens_used")
+
+  review Review @relation(fields: [reviewId], references: [id])
+
+  @@map("responses")
+}
+
+model Setting {
+  key       String   @id @db.VarChar(50)
+  value     Json
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("settings")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  reviewId  String?  @map("review_id") @db.Uuid
+  action    String   @db.VarChar(50)
+  actor     String   @default("system") @db.VarChar(50)
+  details   Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  review Review? @relation(fields: [reviewId], references: [id])
+
+  @@index([createdAt(sort: Desc)])
+  @@map("audit_log")
+}

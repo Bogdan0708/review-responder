@@ -1,0 +1,61 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3003:3000"
+    environment:
+      - DATABASE_URL=postgresql://mitch:password@db:5432/reviews
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LM_STUDIO_URL=${LM_STUDIO_URL}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REFRESH_TOKEN=${GOOGLE_REFRESH_TOKEN}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - AUTH_PASSWORD=${AUTH_PASSWORD}
+      - N8N_WEBHOOK_BASE=${N8N_WEBHOOK_BASE}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=mitch
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=reviews
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mitch -d reviews"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backup:
+    image: postgres:16-alpine
+    volumes:
+      - ./backups:/backups
+    environment:
+      - PGPASSWORD=password
+    entrypoint: []
+    command: >
+      sh -c 'while true; do
+        echo "[backup] Starting pg_dump at $$(date)"
+        pg_dump -h db -U mitch reviews > /backups/reviews-$$(date +%Y%m%d).sql
+        echo "[backup] Cleaning backups older than 14 days"
+        find /backups -name "*.sql" -mtime +14 -delete
+        echo "[backup] Done. Sleeping 24h."
+        sleep 86400
+      done'
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
