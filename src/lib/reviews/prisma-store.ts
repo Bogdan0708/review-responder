@@ -1,9 +1,11 @@
 import { prisma } from "@/lib/db";
-import type {
-  ReviewStore,
-  StoredReview,
-  StoredResponse,
-  AuditEntryInput,
+import {
+  publishClaimTtlMs,
+  type ReviewStore,
+  type StoredReview,
+  type StoredResponse,
+  type AuditEntryInput,
+  type PublishClaim,
 } from "./approve";
 
 interface ResponseRow {
@@ -86,16 +88,22 @@ export function createPrismaReviewStore(): ReviewStore {
     },
 
     /**
-     * One conditional UPDATE is the whole concurrency control: the row is only
-     * claimed if it is approved, unposted and unclaimed. Postgres serialises
-     * the competing updates, so exactly one caller sees count === 1 and goes on
-     * to call Google.
+     * A conditional UPDATE is the whole concurrency control: the row is only
+     * claimed if it is approved, unposted and either unclaimed or holding a
+     * claim older than the TTL. Postgres serialises the competing updates, so
+     * exactly one caller sees count === 1 and goes on to call Google.
+     *
+     * It runs as two statements so the caller can tell a fresh claim from the
+     * takeover of a stale one (which is audited); each statement is itself
+     * atomic, so the race is still decided by the database.
      */
     async claimForPublish(
       reviewId: string,
       responseId: string
-    ): Promise<boolean> {
-      const result = await prisma.response.updateMany({
+    ): Promise<PublishClaim> {
+      const now = new Date();
+
+      const fresh = await prisma.response.updateMany({
         where: {
           id: responseId,
           reviewId,
@@ -103,14 +111,34 @@ export function createPrismaReviewStore(): ReviewStore {
           postedAt: null,
           publishClaimedAt: null,
         },
-        data: { publishClaimedAt: new Date() },
+        data: { publishClaimedAt: now },
       });
-      return result.count === 1;
+      if (fresh.count === 1) return { claimed: true, reclaimed: false };
+
+      // Nobody holds an unclaimed row: either publication is genuinely in
+      // flight, or a previous run died holding the claim.
+      const staleBefore = new Date(now.getTime() - publishClaimTtlMs());
+      const stale = await prisma.response.updateMany({
+        where: {
+          id: responseId,
+          reviewId,
+          approvedAt: { not: null },
+          postedAt: null,
+          publishClaimedAt: { lt: staleBefore },
+        },
+        data: { publishClaimedAt: now },
+      });
+      return { claimed: stale.count === 1, reclaimed: stale.count === 1 };
     },
 
     async releaseClaim(reviewId: string, responseId: string): Promise<void> {
       await prisma.response.updateMany({
-        where: { id: responseId, reviewId, postedAt: null },
+        where: {
+          id: responseId,
+          reviewId,
+          postedAt: null,
+          publishClaimedAt: { not: null },
+        },
         data: { publishClaimedAt: null },
       });
     },

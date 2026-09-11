@@ -2,18 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { MemoryReviewStore } from "../src/lib/reviews/memory-store";
 import { FakeGoogle } from "../src/lib/google/__mocks__/fake-google";
 import { approveResponse, publishApproved } from "../src/lib/reviews/approve";
+import type { PublishClaim } from "../src/lib/reviews/approve";
 import { createFakePrisma, type FakePrisma } from "./helpers/fake-prisma";
 
 const fakePrisma = createFakePrisma();
 vi.mock("@/lib/db", () => ({ prisma: fakePrisma }));
-vi.mock("../db", () => ({ prisma: fakePrisma }));
 vi.mock("@/lib/webhooks/notify", () => ({ notifyWebhook: vi.fn(async () => undefined) }));
-vi.mock("../webhooks/notify", () => ({ notifyWebhook: vi.fn(async () => undefined) }));
 vi.mock("@/lib/google/auth", () => ({
-  getAccessToken: vi.fn(async () => "fake-token"),
-  clearTokenCache: vi.fn(),
-}));
-vi.mock("./auth", () => ({
   getAccessToken: vi.fn(async () => "fake-token"),
   clearTokenCache: vi.fn(),
 }));
@@ -124,6 +119,99 @@ describe("publishApproved — publication invariants", () => {
     expect(entry?.details).toMatchObject({ responseId: "resp-1", error: "connection terminated" });
     expect(google.published).toHaveLength(1);
     expect(store.audit.some((a) => a.action === "response_posted")).toBe(false);
+  });
+
+  it("reclaims a stale claim left by a crashed run and publishes exactly once", async () => {
+    const store = approvedStore();
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    // A previous run claimed the response and died before marking it posted.
+    store.patchResponse("r1", "resp-1", { publishClaimedAt: thirtyDaysAgo });
+
+    const google = new FakeGoogle();
+    const result = await publishApproved({ reviewId: "r1", responseId: "resp-1", store, google });
+
+    expect(result.posted).toBe(true);
+    expect(google.published).toEqual([{ id: "r1", text: "Approved text" }]);
+    expect((await store.getResponse("r1", "resp-1"))?.postedAt).not.toBeNull();
+    expect(store.audit.filter((a) => a.action === "response_posted")).toHaveLength(1);
+    const reclaim = store.audit.find((a) => a.action === "response_post_claim_reclaimed");
+    expect(reclaim).toBeDefined();
+    expect(reclaim?.details).toMatchObject({ responseId: "resp-1" });
+  });
+
+  it("does not touch a claim that is still within the TTL", async () => {
+    const store = approvedStore();
+    const oneMinuteAgo = new Date(Date.now() - 60_000).toISOString();
+    store.patchResponse("r1", "resp-1", { publishClaimedAt: oneMinuteAgo });
+
+    const google = new FakeGoogle();
+    const result = await publishApproved({ reviewId: "r1", responseId: "resp-1", store, google });
+
+    expect(result).toMatchObject({ posted: false, alreadyClaimed: true });
+    expect(google.published).toHaveLength(0);
+    expect((await store.getResponse("r1", "resp-1"))?.publishClaimedAt).toBe(oneMinuteAgo);
+  });
+
+  it("publishes the row as it stands once the claim is held, not the pre-claim read", async () => {
+    const store = approvedStore("Text read before the claim");
+    const google = new FakeGoogle();
+
+    // Simulate a write landing in the window between the pre-claim read and
+    // the claim itself: what gets published must be the post-claim state.
+    const realClaim = store.claimForPublish.bind(store);
+    vi.spyOn(store, "claimForPublish").mockImplementationOnce(
+      async (reviewId: string, responseId: string): Promise<PublishClaim> => {
+        const claim = await realClaim(reviewId, responseId);
+        store.patchResponse(reviewId, responseId, {
+          finalText: "Text as it stands when the claim is held",
+        });
+        return claim;
+      }
+    );
+
+    const result = await publishApproved({ reviewId: "r1", responseId: "resp-1", store, google });
+
+    expect(result.publishedText).toBe("Text as it stands when the claim is held");
+    expect(google.published).toEqual([
+      { id: "r1", text: "Text as it stands when the claim is held" },
+    ]);
+  });
+
+  it("releases the claim and refuses to publish if the approval is revoked before the claim", async () => {
+    const store = approvedStore();
+    const google = new FakeGoogle();
+
+    const realClaim = store.claimForPublish.bind(store);
+    vi.spyOn(store, "claimForPublish").mockImplementationOnce(
+      async (reviewId: string, responseId: string): Promise<PublishClaim> => {
+        const claim = await realClaim(reviewId, responseId);
+        store.patchResponse(reviewId, responseId, { approvedAt: null });
+        return claim;
+      }
+    );
+
+    await expect(
+      publishApproved({ reviewId: "r1", responseId: "resp-1", store, google })
+    ).rejects.toThrow(/stopped being approved/);
+    expect(google.published).toHaveLength(0);
+    expect((await store.getResponse("r1", "resp-1"))?.publishClaimedAt).toBeNull();
+  });
+
+  it("refuses to re-approve a response whose publication is already claimed", async () => {
+    const store = approvedStore();
+    store.patchResponse("r1", "resp-1", { publishClaimedAt: new Date().toISOString() });
+
+    await expect(
+      approveResponse({
+        reviewId: "r1",
+        responseId: "resp-1",
+        text: "Changed while publishing",
+        actor: "owner",
+        role: "owner",
+        store,
+      })
+    ).rejects.toThrow(/being published/);
+    expect((await store.getResponse("r1", "resp-1"))?.finalText).toBe("Approved text");
   });
 
   it("never calls google again for a response that is already posted", async () => {

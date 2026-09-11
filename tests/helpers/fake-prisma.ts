@@ -36,10 +36,17 @@ export interface FakeAuditRow {
 
 function matchesNullFilter(value: unknown, filter: unknown): boolean {
   if (filter === null) return value === null;
-  if (filter && typeof filter === "object" && "not" in (filter as object)) {
-    const not = (filter as { not: unknown }).not;
-    if (not === null) return value !== null;
-    return value !== not;
+  if (filter && typeof filter === "object") {
+    if ("not" in (filter as object)) {
+      const not = (filter as { not: unknown }).not;
+      if (not === null) return value !== null;
+      return value !== not;
+    }
+    if ("lt" in (filter as object)) {
+      const lt = (filter as { lt: Date }).lt;
+      if (!(value instanceof Date)) return false;
+      return value.getTime() < lt.getTime();
+    }
   }
   return value === filter;
 }
@@ -108,6 +115,11 @@ export class FakePrisma {
   };
 
   response = {
+    findUnique: vi.fn(async (args: any) => {
+      const row = this.responses.find((r) => r.id === args.where.id);
+      return row ? { ...row } : null;
+    }),
+
     findFirst: vi.fn(async (args: any) => {
       const w = args?.where ?? {};
       const rows = this.responses
@@ -137,7 +149,8 @@ export class FakePrisma {
           (w.approvedAt === undefined || matchesNullFilter(r.approvedAt, w.approvedAt)) &&
           (w.postedAt === undefined || matchesNullFilter(r.postedAt, w.postedAt)) &&
           (w.publishClaimedAt === undefined ||
-            matchesNullFilter(r.publishClaimedAt, w.publishClaimedAt))
+            matchesNullFilter(r.publishClaimedAt, w.publishClaimedAt)) &&
+          (w.reviewId === undefined || r.reviewId === w.reviewId)
       );
       for (const row of matched) Object.assign(row, args.data);
       return { count: matched.length };
@@ -149,6 +162,8 @@ export class FakePrisma {
       this.auditEntries.push(args.data);
       return { ...args.data };
     }),
+
+    deleteMany: vi.fn(async () => ({ count: 0 })),
   };
 
   $transaction = vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops));

@@ -22,6 +22,11 @@
  *  - publication is claimed atomically (`store.claimForPublish`), so two
  *    concurrent workers produce exactly one `google.reply` call and exactly
  *    one `response_posted` audit entry
+ *  - a claim older than `PUBLISH_CLAIM_TTL_MS` (default 15 minutes) is stale —
+ *    a process that crashed between claiming and recording the post — and is
+ *    reclaimed, with a `response_post_claim_reclaimed` audit entry
+ *  - the text is read again AFTER the claim is held, so an edit racing the
+ *    claim can never be the thing that gets published unnoticed
  *  - a failed `google.reply` never marks the response posted and always
  *    releases the claim, so a later run can retry
  *  - if Google accepted the reply but the database write then failed, a
@@ -55,6 +60,24 @@ export interface AuditEntryInput {
 }
 
 /** Storage port implemented once over Prisma and once in memory (tests/demo). */
+/** Result of an attempt to take the publication claim. */
+export interface PublishClaim {
+  claimed: boolean;
+  /** True when the claim taken over was a stale one left by a crashed run. */
+  reclaimed: boolean;
+}
+
+/** How long a held-but-unfinished claim stays valid before it can be taken over. */
+export const DEFAULT_PUBLISH_CLAIM_TTL_MS = 15 * 60 * 1000;
+
+export function publishClaimTtlMs(): number {
+  const raw = process.env.PUBLISH_CLAIM_TTL_MS;
+  if (!raw) return DEFAULT_PUBLISH_CLAIM_TTL_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PUBLISH_CLAIM_TTL_MS;
+  return parsed;
+}
+
 export interface ReviewStore {
   getReview(id: string): Promise<StoredReview | null>;
   /** The most recently generated response — used to pick what to approve. */
@@ -64,11 +87,11 @@ export interface ReviewStore {
   markApproved(reviewId: string, responseId: string, text: string): Promise<void>;
   markPosted(reviewId: string, responseId: string): Promise<void>;
   /**
-   * Atomically take the right to publish this response. Must be a single
-   * conditional write (approved, not posted, not already claimed) and must
-   * return true for exactly one caller.
+   * Atomically take the right to publish this response. Must be a conditional
+   * write (approved, not posted, and either unclaimed or holding a claim older
+   * than the TTL) and must report `claimed: true` for exactly one caller.
    */
-  claimForPublish(reviewId: string, responseId: string): Promise<boolean>;
+  claimForPublish(reviewId: string, responseId: string): Promise<PublishClaim>;
   /** Undo an unused claim so a later run can retry. */
   releaseClaim(reviewId: string, responseId: string): Promise<void>;
   writeAudit(entry: AuditEntryInput): Promise<void>;
@@ -128,6 +151,12 @@ export async function approveResponse(
       `Response ${responseId} has already been published and cannot be re-approved`
     );
   }
+  if (response.publishClaimedAt) {
+    // Publication is already under way with the text approved earlier.
+    throw new Error(
+      `Response ${responseId} is being published and cannot be re-approved`
+    );
+  }
 
   await store.markApproved(reviewId, responseId, text);
   await store.writeAudit({
@@ -184,13 +213,38 @@ export async function publishApproved(
 
   // Atomic claim. Exactly one concurrent caller wins; everyone else stops here
   // without touching Google.
-  const claimed = await store.claimForPublish(reviewId, responseId);
-  if (!claimed) {
+  const claim = await store.claimForPublish(reviewId, responseId);
+  if (!claim.claimed) {
     return { reviewId, responseId, ok: true, posted: false, alreadyClaimed: true };
   }
 
+  if (claim.reclaimed) {
+    // A previous run died between claiming and recording the post. It may or
+    // may not have reached Google, so this is worth an explicit audit trail.
+    await store.writeAudit({
+      reviewId,
+      action: "response_post_claim_reclaimed",
+      actor,
+      details: { responseId, claimTtlMs: publishClaimTtlMs() },
+    });
+  }
+
+  // Read the row again now that the claim is HELD: anything that raced the
+  // pre-claim read (an edit, an approval being revoked) is visible here, so the
+  // text published is the state this call actually owns.
+  const claimedResponse = await store.getResponse(reviewId, responseId);
+  if (!claimedResponse || !claimedResponse.approvedAt) {
+    await store.releaseClaim(reviewId, responseId);
+    throw new Error(
+      `Response ${responseId} of review ${reviewId} stopped being approved before it could be published`
+    );
+  }
+  if (claimedResponse.postedAt) {
+    return { reviewId, responseId, ok: true, posted: true, alreadyPosted: true };
+  }
+
   // Publish what was approved, read from storage — never a caller-supplied text.
-  const text = approvedTextOf(response);
+  const text = approvedTextOf(claimedResponse);
 
   let result: { ok: boolean };
   let publishError: unknown = null;

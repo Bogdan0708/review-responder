@@ -1,8 +1,10 @@
-import type {
-  ReviewStore,
-  StoredReview,
-  StoredResponse,
-  AuditEntryInput,
+import {
+  publishClaimTtlMs,
+  type ReviewStore,
+  type StoredReview,
+  type StoredResponse,
+  type AuditEntryInput,
+  type PublishClaim,
 } from "./approve";
 
 export interface SeedResponseInput {
@@ -51,17 +53,32 @@ export class MemoryReviewStore implements ReviewStore {
     return this.reviews.get(id) ?? null;
   }
 
+  /**
+   * Reads return detached copies, as a database read does: a caller that holds
+   * a `StoredResponse` is holding a snapshot, not a live row.
+   */
   async getLatestResponse(reviewId: string): Promise<StoredResponse | null> {
     const list = this.responses.get(reviewId);
     if (!list || list.length === 0) return null;
-    return list[list.length - 1];
+    return { ...list[list.length - 1] };
   }
 
   async getResponse(
     reviewId: string,
     responseId: string
   ): Promise<StoredResponse | null> {
-    return this.findResponse(reviewId, responseId) ?? null;
+    const response = this.findResponse(reviewId, responseId);
+    return response ? { ...response } : null;
+  }
+
+  /** Test/demo helper: write straight to a stored row (simulates a racing write). */
+  patchResponse(
+    reviewId: string,
+    responseId: string,
+    patch: Partial<Omit<StoredResponse, "id">>
+  ): void {
+    const response = this.findResponse(reviewId, responseId);
+    if (response) Object.assign(response, patch);
   }
 
   async markApproved(
@@ -88,24 +105,40 @@ export class MemoryReviewStore implements ReviewStore {
   }
 
   /**
-   * Same semantics as the Prisma `updateMany` claim: approved, not posted,
-   * not already claimed. The check and the write happen with no `await`
-   * between them, so concurrent callers on the single-threaded event loop see
-   * the same all-or-nothing behaviour as the conditional SQL UPDATE.
+   * Same semantics as the Prisma `updateMany` claim: approved, not posted, and
+   * either unclaimed or holding a claim older than the TTL (a run that died
+   * mid-publish). The check and the write happen with no `await` between them,
+   * so concurrent callers on the single-threaded event loop see the same
+   * all-or-nothing behaviour as the conditional SQL UPDATE.
    */
-  async claimForPublish(reviewId: string, responseId: string): Promise<boolean> {
+  async claimForPublish(
+    reviewId: string,
+    responseId: string
+  ): Promise<PublishClaim> {
     const response = this.findResponse(reviewId, responseId);
-    if (!response) return false;
-    if (!response.approvedAt) return false;
-    if (response.postedAt) return false;
-    if (response.publishClaimedAt) return false;
-    response.publishClaimedAt = new Date().toISOString();
-    return true;
+    if (!response) return { claimed: false, reclaimed: false };
+    if (!response.approvedAt) return { claimed: false, reclaimed: false };
+    if (response.postedAt) return { claimed: false, reclaimed: false };
+
+    const now = Date.now();
+    let reclaimed = false;
+    if (response.publishClaimedAt) {
+      const heldSince = new Date(response.publishClaimedAt).getTime();
+      const stale =
+        Number.isFinite(heldSince) && now - heldSince >= publishClaimTtlMs();
+      if (!stale) return { claimed: false, reclaimed: false };
+      reclaimed = true;
+    }
+
+    response.publishClaimedAt = new Date(now).toISOString();
+    return { claimed: true, reclaimed };
   }
 
   async releaseClaim(reviewId: string, responseId: string): Promise<void> {
     const response = this.findResponse(reviewId, responseId);
-    if (response && !response.postedAt) response.publishClaimedAt = null;
+    if (response && !response.postedAt && response.publishClaimedAt) {
+      response.publishClaimedAt = null;
+    }
   }
 
   async writeAudit(entry: AuditEntryInput): Promise<void> {
