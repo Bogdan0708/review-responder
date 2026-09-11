@@ -13,6 +13,10 @@ function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
+function isApiPath(pathname: string): boolean {
+  return pathname === "/api" || pathname.startsWith("/api/");
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -22,12 +26,23 @@ export async function middleware(request: NextRequest) {
 
   // Verify the cookie's HMAC signature and its issued-at expiry. A cookie that
   // merely exists proves nothing: it is attacker-controlled.
-  const session = await readSession(request);
+  let session;
+  try {
+    session = await readSession(request);
+  } catch {
+    // NEXTAUTH_SECRET is missing, so no session can be verified. Fail closed
+    // with a deliberate 503 rather than letting the error surface as a 500.
+    return NextResponse.json(
+      { error: "Session verification is not configured" },
+      { status: 503 }
+    );
+  }
+
   if (session) {
     return NextResponse.next();
   }
 
-  if (pathname === "/api" || pathname.startsWith("/api/")) {
+  if (isApiPath(pathname)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

@@ -10,9 +10,12 @@
  * Token format: `<base64url(JSON payload)>.<hex HMAC-SHA256 of the payload>`.
  * The payload carries an issued-at timestamp, so expiry is enforced
  * server-side rather than relying on the browser honouring the cookie's
- * Max-Age. Tokens issued by the previous format (a bare `Date.now()` string)
- * no longer parse and are rejected — the only effect is that existing
- * sessions have to log in again.
+ * Max-Age. It also carries a session version (`SESSION_VERSION`): bumping
+ * that environment variable invalidates every issued token at once, which is
+ * the server-side revocation lever a cookie-clearing logout cannot provide.
+ * Tokens issued by the previous format (a bare `Date.now()` string) no longer
+ * parse and are rejected — the only effect is that existing sessions have to
+ * log in again.
  */
 
 export const COOKIE_NAME = "auth_session";
@@ -39,6 +42,16 @@ export interface Session {
 interface SessionPayload {
   v: number;
   iat: number;
+  /** Session version at issue time; see `currentSessionVersion`. */
+  sv: string;
+}
+
+/**
+ * Every token carries this. Bump `SESSION_VERSION` (and restart) to revoke all
+ * outstanding sessions without rotating the HMAC key.
+ */
+export function currentSessionVersion(): string {
+  return process.env.SESSION_VERSION ?? "1";
 }
 
 /** Anything with a cookie jar: `NextRequest`, or a plain object in tests. */
@@ -101,7 +114,11 @@ function constantTimeEquals(a: string, b: string): boolean {
 /** `issuedAt` is injectable so tests can mint expired / future-dated tokens. */
 export async function createSessionToken(issuedAt: number = Date.now()): Promise<string> {
   const payload = base64UrlEncode(
-    JSON.stringify({ v: PAYLOAD_VERSION, iat: issuedAt } satisfies SessionPayload)
+    JSON.stringify({
+      v: PAYLOAD_VERSION,
+      iat: issuedAt,
+      sv: currentSessionVersion(),
+    } satisfies SessionPayload)
   );
   return `${payload}.${await sign(payload)}`;
 }
@@ -134,8 +151,9 @@ export async function readSessionToken(
   }
   if (!parsed || typeof parsed !== "object") return null;
 
-  const { v, iat } = parsed as Partial<SessionPayload>;
+  const { v, iat, sv } = parsed as Partial<SessionPayload>;
   if (v !== PAYLOAD_VERSION) return null;
+  if (typeof sv !== "string" || sv !== currentSessionVersion()) return null;
   if (typeof iat !== "number" || !Number.isFinite(iat)) return null;
   if (iat > now + CLOCK_SKEW_MS) return null;
   if (iat + SESSION_MAX_AGE * 1000 <= now) return null;

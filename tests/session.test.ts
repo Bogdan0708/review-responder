@@ -66,6 +66,24 @@ describe("session tokens", () => {
     expect(await verifySessionToken(future)).toBe(false);
   });
 
+  it("rejects a token issued under an earlier SESSION_VERSION", async () => {
+    const previous = process.env.SESSION_VERSION;
+    try {
+      process.env.SESSION_VERSION = "7";
+      const token = await createSessionToken();
+      expect(await verifySessionToken(token)).toBe(true);
+
+      // Bumping the version is the server-side revocation lever: every token
+      // issued under the old value stops verifying immediately.
+      process.env.SESSION_VERSION = "8";
+      expect(await verifySessionToken(token)).toBe(false);
+      expect(await readSessionToken(token)).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.SESSION_VERSION;
+      else process.env.SESSION_VERSION = previous;
+    }
+  });
+
   it("readSession reads the session cookie off a request", async () => {
     expect(await readSession(requestWithCookie())).toBeNull();
     expect(await readSession(requestWithCookie("nonsense"))).toBeNull();

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { readSession } from "@/lib/session";
+import { requireSession } from "@/lib/api-session";
 import { approveResponse, publishApproved } from "@/lib/reviews/approve";
 import { createPrismaReviewStore } from "@/lib/reviews/prisma-store";
 import { createGoogleReplyClient } from "@/lib/google/respond";
@@ -17,10 +17,9 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await readSession(request);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const guard = await requireSession(request);
+  if (guard.error) return guard.error;
+  const session = guard.session;
 
   try {
     const { id } = await params;

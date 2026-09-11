@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ingestReview, type IngestReviewInput } from "@/lib/reviews/ingest";
+import { secretsMatch } from "@/lib/secrets";
 
 function validatePayload(body: unknown): body is IngestReviewInput {
   if (!body || typeof body !== "object") return false;
@@ -35,7 +36,7 @@ export async function POST(request: NextRequest) {
       { status: 503 }
     );
   }
-  if (request.headers.get("x-webhook-secret") !== webhookSecret) {
+  if (!secretsMatch(request.headers.get("x-webhook-secret"), webhookSecret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

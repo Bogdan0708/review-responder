@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchGoogleReviews } from "@/lib/google/reviews";
 import { postPendingGoogleResponses } from "@/lib/google/respond";
+import { secretsMatch } from "@/lib/secrets";
 
 export async function POST(request: NextRequest) {
   // The middleware exempts /api/cron, so this shared secret is the only thing
@@ -15,7 +16,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (authHeader !== `Bearer ${cronSecret}`) {
+  if (!secretsMatch(authHeader, `Bearer ${cronSecret}`)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

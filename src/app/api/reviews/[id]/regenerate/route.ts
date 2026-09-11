@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { readSession } from "@/lib/session";
+import { requireSession } from "@/lib/api-session";
 import { generateResponse } from "@/lib/ai/generate";
 
 export async function POST(
@@ -9,10 +9,9 @@ export async function POST(
 ) {
   // Verified here as well as in the middleware (defence in depth); the actor
   // is derived from the session, not hard-coded.
-  const session = await readSession(request);
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const guard = await requireSession(request);
+  if (guard.error) return guard.error;
+  const session = guard.session;
 
   try {
     const { id } = await params;
