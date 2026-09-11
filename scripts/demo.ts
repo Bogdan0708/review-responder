@@ -7,17 +7,18 @@
  *   1. Load 5 synthetic reviews for a fictional venue ("The Example Bistro")
  *      from fixtures/reviews.json.
  *   2. Generate a draft reply for each with a stub generator (no LLM calls).
- *   3. Run each draft through approveAndPublish(), backed by an in-memory
- *      store and the FakeGoogle client.
+ *   3. Approve each draft (approveResponse) and then publish the approved
+ *      response (publishApproved), backed by an in-memory store and the
+ *      FakeGoogle client.
  *   4. Print the approve -> publish trace, including the idempotency check
- *      (approving the same review twice publishes only once) and a
- *      simulated Google outage (one review fails to publish and is not
- *      marked posted).
+ *      (publishing the same response twice calls Google once), a concurrency
+ *      check (two workers racing on one response both go through
+ *      publishApproved and only one reaches Google) and a permission check.
  */
 
 import { MemoryReviewStore } from "../src/lib/reviews/memory-store";
 import { FakeGoogle } from "../src/lib/google/__mocks__/fake-google";
-import { approveAndPublish } from "../src/lib/reviews/approve";
+import { approveResponse, publishApproved } from "../src/lib/reviews/approve";
 import reviews from "../fixtures/reviews.json";
 
 interface DemoReview {
@@ -55,13 +56,20 @@ async function main() {
     console.log(`  draft: "${draft}"`);
 
     try {
-      const result = await approveAndPublish({
+      const approved = await approveResponse({
         reviewId: review.id,
+        responseId: `resp-${review.id}`,
         text: draft,
         actor: OWNER.actor,
         role: OWNER.role,
         store,
+      });
+      const result = await publishApproved({
+        reviewId: review.id,
+        responseId: approved.responseId,
+        store,
         google,
+        actor: OWNER.actor,
       });
       console.log(`  approved + posted (responseId=${result.responseId})`);
     } catch (err) {
@@ -70,33 +78,57 @@ async function main() {
     console.log("");
   }
 
-  console.log("--- Idempotency check: approving review 1 again must not publish twice ---");
+  console.log("--- Idempotency check: publishing review 1 again must not publish twice ---");
   const first = reviews[0] as DemoReview;
-  const republishAttempts = await approveAndPublish({
+  const republishAttempt = await publishApproved({
     reviewId: first.id,
-    text: "ignored — response is already approved and posted",
-    actor: OWNER.actor,
-    role: OWNER.role,
+    responseId: `resp-${first.id}`,
     store,
     google,
+    actor: OWNER.actor,
   });
   console.log(
-    `Second approve call for "${first.id}" returned alreadyPosted=${Boolean(
-      republishAttempts.alreadyPosted
+    `Second publish call for "${first.id}" returned alreadyPosted=${Boolean(
+      republishAttempt.alreadyPosted
     )}; google.reply was called for it ${
       google.published.filter((p) => p.id === first.id).length
     } time(s) in total.`
   );
 
-  console.log("\n--- Permission check: a viewer role cannot approve or publish ---");
+  console.log("\n--- Concurrency check: two workers racing to publish one approved response ---");
+  const raceStore = new MemoryReviewStore();
+  const raceGoogle = new FakeGoogle();
+  raceStore.seedReview(
+    { id: "race", status: "draft_ready" },
+    { id: "resp-race", draftText: "Thanks for the kind words!" }
+  );
+  await approveResponse({
+    reviewId: "race",
+    responseId: "resp-race",
+    text: "Thanks for the kind words!",
+    actor: OWNER.actor,
+    role: OWNER.role,
+    store: raceStore,
+  });
+  const raced = await Promise.all([
+    publishApproved({ reviewId: "race", responseId: "resp-race", store: raceStore, google: raceGoogle }),
+    publishApproved({ reviewId: "race", responseId: "resp-race", store: raceStore, google: raceGoogle }),
+  ]);
+  console.log(
+    `Two concurrent publishes: google.reply called ${raceGoogle.published.length} time(s), ` +
+      `${raced.filter((r) => r.alreadyClaimed).length} caller(s) lost the claim, ` +
+      `${raceStore.audit.filter((a) => a.action === "response_posted").length} response_posted audit entry.`
+  );
+
+  console.log("\n--- Permission check: a viewer role cannot approve ---");
   try {
-    await approveAndPublish({
+    await approveResponse({
       reviewId: reviews[1].id,
+      responseId: `resp-${reviews[1].id}`,
       text: "irrelevant",
       actor: "intern@example.com",
       role: "viewer",
       store,
-      google,
     });
   } catch (err) {
     console.log(`Rejected as expected: ${(err as Error).message}`);

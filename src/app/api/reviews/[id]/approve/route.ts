@@ -1,12 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { approveAndPublish } from "@/lib/reviews/approve";
+import { readSession } from "@/lib/session";
+import { approveResponse, publishApproved } from "@/lib/reviews/approve";
 import { createPrismaReviewStore } from "@/lib/reviews/prisma-store";
+import { createGoogleReplyClient } from "@/lib/google/respond";
 
+/**
+ * Approve the latest draft for a review, and optionally publish it right away
+ * (`?publish=1`); otherwise publication is left to the background job.
+ *
+ * The session is verified here as well as in the middleware (defence in
+ * depth), and the actor/role come from that verified session — never from the
+ * request body and never hard-coded.
+ */
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const session = await readSession(request);
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const { id } = await params;
     const review = await prisma.review.findUnique({
@@ -26,18 +41,45 @@ export async function POST(
       );
     }
 
-    // Publishing to Google is deferred to the background job
-    // (postPendingGoogleResponses); this only records the approval.
-    // TODO(auth): derive role from session
-    await approveAndPublish({
+    const store = createPrismaReviewStore();
+
+    // Approval is bound to this exact response id and the text stored on it.
+    const approved = await approveResponse({
       reviewId: id,
+      responseId: latestResponse.id,
       text: latestResponse.finalText ?? latestResponse.draftText,
-      actor: "dashboard",
-      role: "owner",
-      store: createPrismaReviewStore(),
+      actor: session.actor,
+      role: session.role,
+      store,
     });
 
-    return NextResponse.json({ message: "Response approved" });
+    const publishNow =
+      new URL(request.url).searchParams.get("publish") === "1";
+
+    if (!publishNow) {
+      return NextResponse.json({
+        message: "Response approved",
+        responseId: approved.responseId,
+        posted: false,
+      });
+    }
+
+    // Publishes the stored approved text of that same response id.
+    const result = await publishApproved({
+      reviewId: id,
+      responseId: approved.responseId,
+      store,
+      google: createGoogleReplyClient(review.externalId),
+      actor: session.actor,
+    });
+
+    return NextResponse.json({
+      message: result.posted
+        ? "Response approved and published"
+        : "Response approved; publication is already claimed by another worker",
+      responseId: approved.responseId,
+      posted: result.posted,
+    });
   } catch (err) {
     console.error("Error approving response:", err);
     return NextResponse.json(

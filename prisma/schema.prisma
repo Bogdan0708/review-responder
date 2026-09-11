@@ -38,11 +38,13 @@ model Response {
   generatedAt DateTime  @default(now()) @map("generated_at") @db.Timestamptz()
   approvedAt  DateTime? @map("approved_at") @db.Timestamptz()
   postedAt    DateTime? @map("posted_at") @db.Timestamptz()
+  publishClaimedAt DateTime? @map("publish_claimed_at") @db.Timestamptz()
   llmModel    String?   @map("llm_model") @db.VarChar(50)
   llmTokensUsed Int?    @map("llm_tokens_used")
 
   review Review @relation(fields: [reviewId], references: [id])
 
+  @@index([reviewId, postedAt])
   @@map("responses")
 }
 

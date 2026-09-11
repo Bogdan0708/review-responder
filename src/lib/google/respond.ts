@@ -2,7 +2,7 @@ import { prisma } from "../db";
 import { withRetry } from "../config/retry";
 import { notifyWebhook } from "../webhooks/notify";
 import { getAccessToken, clearTokenCache } from "./auth";
-import { approveAndPublish } from "../reviews/approve";
+import { publishApproved, type GoogleClient } from "../reviews/approve";
 import { createPrismaReviewStore } from "../reviews/prisma-store";
 
 const GBP_API_BASE = "https://mybusiness.googleapis.com/v4";
@@ -27,7 +27,7 @@ async function postReplyToGoogle(
   const locationName = getGoogleLocationName();
   const url = `${GBP_API_BASE}/${locationName}/reviews/${googleReviewId}/reply`;
 
-  const response = await withRetry(async () => {
+  await withRetry(async () => {
     const token = await getAccessToken();
     const res = await fetch(url, {
       method: "PUT",
@@ -52,10 +52,37 @@ async function postReplyToGoogle(
   });
 }
 
-/** Post approved responses for all Google reviews that haven't been posted yet. */
+/**
+ * The real `GoogleClient` for one review. The text always comes from
+ * `publishApproved` (the stored approved text), never from the caller.
+ */
+export function createGoogleReplyClient(externalReviewId: string): GoogleClient {
+  return {
+    async reply(reviewId: string, text: string) {
+      try {
+        await postReplyToGoogle(externalReviewId, text);
+        return { ok: true };
+      } catch (err) {
+        console.error(`Failed to post response for review ${reviewId}:`, err);
+        return { ok: false };
+      }
+    },
+  };
+}
+
+/**
+ * Post approved responses for all Google reviews that haven't been posted yet.
+ *
+ * The selection produces explicit `{ reviewId, responseId }` pairs and those
+ * ids are what gets published: if a newer draft is regenerated between the
+ * query and the publish, the approved response is still the one that goes to
+ * Google. The publication claim (`publishApproved`) makes overlapping runs of
+ * this worker safe.
+ */
 export async function postPendingGoogleResponses(): Promise<{
   posted: number;
   failed: number;
+  skipped: number;
 }> {
   const approvedReviews = await prisma.review.findMany({
     where: {
@@ -71,49 +98,50 @@ export async function postPendingGoogleResponses(): Promise<{
     },
   });
 
+  const targets = approvedReviews.flatMap((review) => {
+    const response = review.responses[0];
+    if (!response) return [];
+    return [
+      {
+        reviewId: review.id,
+        responseId: response.id,
+        externalId: review.externalId,
+        authorName: review.authorName,
+      },
+    ];
+  });
+
   const store = createPrismaReviewStore();
   let posted = 0;
   let failed = 0;
+  let skipped = 0;
 
-  for (const review of approvedReviews) {
-    const response = review.responses[0];
-    if (!response) continue;
-
-    const replyText = response.finalText ?? response.draftText;
-
+  for (const target of targets) {
     try {
-      await approveAndPublish({
-        reviewId: review.id,
-        text: replyText,
+      const result = await publishApproved({
+        reviewId: target.reviewId,
+        responseId: target.responseId,
         actor: "system:cron",
-        role: "manager",
         store,
-        google: {
-          async reply(_reviewId: string, text: string) {
-            try {
-              await postReplyToGoogle(review.externalId, text);
-              return { ok: true };
-            } catch (err) {
-              console.error(
-                `Failed to post response for review ${review.id}:`,
-                err
-              );
-              return { ok: false };
-            }
-          },
-        },
+        google: createGoogleReplyClient(target.externalId),
       });
 
+      if (result.publishedText === undefined) {
+        // Already posted, or another worker holds the claim.
+        skipped++;
+        continue;
+      }
+
       notifyWebhook("response_posted", {
-        reviewId: review.id,
+        reviewId: target.reviewId,
         platform: "google",
-        authorName: review.authorName ?? "Anonymous",
+        authorName: target.authorName ?? "Anonymous",
       });
 
       posted++;
     } catch (err) {
       console.error(
-        `Failed to post response for review ${review.id}:`,
+        `Failed to post response ${target.responseId} for review ${target.reviewId}:`,
         err
       );
 
@@ -121,5 +149,5 @@ export async function postPendingGoogleResponses(): Promise<{
     }
   }
 
-  return { posted, failed };
+  return { posted, failed, skipped };
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { MemoryReviewStore } from "../src/lib/reviews/memory-store";
 import { FakeGoogle } from "../src/lib/google/__mocks__/fake-google";
-import { approveAndPublish } from "../src/lib/reviews/approve";
+import { approveResponse, publishApproved } from "../src/lib/reviews/approve";
 
 function seededStore(): MemoryReviewStore {
   const store = new MemoryReviewStore();
@@ -11,26 +11,83 @@ function seededStore(): MemoryReviewStore {
   return store;
 }
 
-describe("approveAndPublish", () => {
-  it("publishes exactly once even when approved twice", async () => {
+const OWNER = { actor: "owner@example.com", role: "owner" } as const;
+
+describe("approveResponse", () => {
+  it("binds the approval to one response id and its exact text", async () => {
+    const store = seededStore();
+
+    const result = await approveResponse({
+      reviewId: "r1",
+      responseId: "resp-r1",
+      text: "Thanks so much!",
+      ...OWNER,
+      store,
+    });
+
+    expect(result).toEqual({
+      reviewId: "r1",
+      responseId: "resp-r1",
+      approvedText: "Thanks so much!",
+    });
+    const response = await store.getResponse("r1", "resp-r1");
+    expect(response?.approvedAt).not.toBeNull();
+    expect(response?.finalText).toBe("Thanks so much!");
+    expect(response?.postedAt).toBeNull();
+    expect(store.audit.some((a) => a.reviewId === "r1" && a.action === "response_approved")).toBe(true);
+  });
+
+  it("refuses to approve without an owner/manager role", async () => {
+    const store = seededStore();
+
+    await expect(
+      approveResponse({ reviewId: "r2", responseId: "resp-r2", text: "x", actor: "stranger", role: "viewer", store })
+    ).rejects.toThrow(/not permitted/);
+
+    expect((await store.getResponse("r2", "resp-r2"))?.approvedAt).toBeNull();
+  });
+
+  it("refuses to approve a response that belongs to another review", async () => {
+    const store = seededStore();
+
+    await expect(
+      approveResponse({ reviewId: "r2", responseId: "resp-r3", text: "x", ...OWNER, store })
+    ).rejects.toThrow(/not found/);
+  });
+
+  it("refuses to re-approve a response that has already been published", async () => {
+    const store = seededStore();
+    await approveResponse({ reviewId: "r1", responseId: "resp-r1", text: "Thanks!", ...OWNER, store });
+    await publishApproved({ reviewId: "r1", responseId: "resp-r1", store, google: new FakeGoogle() });
+
+    await expect(
+      approveResponse({ reviewId: "r1", responseId: "resp-r1", text: "Different text", ...OWNER, store })
+    ).rejects.toThrow(/already been published/);
+  });
+});
+
+describe("approveResponse + publishApproved together", () => {
+  it("publishes exactly once when the same response is published twice in a row", async () => {
     const store = seededStore();
     const g = new FakeGoogle();
 
-    await approveAndPublish({ reviewId: "r1", text: "Thanks!", actor: "owner@example.com", role: "owner", store, google: g });
-    await approveAndPublish({ reviewId: "r1", text: "Thanks!", actor: "owner@example.com", role: "owner", store, google: g });
+    await approveResponse({ reviewId: "r1", responseId: "resp-r1", text: "Thanks!", ...OWNER, store });
+    await publishApproved({ reviewId: "r1", responseId: "resp-r1", store, google: g });
+    await publishApproved({ reviewId: "r1", responseId: "resp-r1", store, google: g });
 
     expect(g.published.filter((p) => p.id === "r1")).toHaveLength(1);
   });
 
-  it("refuses to approve or publish without an owner/manager role", async () => {
+  it("publishes the approved text, not a newer regenerated draft", async () => {
     const store = seededStore();
     const g = new FakeGoogle();
 
-    await expect(
-      approveAndPublish({ reviewId: "r2", text: "x", actor: "stranger", role: "viewer", store, google: g })
-    ).rejects.toThrow(/not permitted/);
+    await approveResponse({ reviewId: "r1", responseId: "resp-r1", text: "Thanks!", ...OWNER, store });
+    store.addResponse("r1", { id: "resp-r1b", draftText: "Regenerated, never approved" });
 
-    expect(g.published).toHaveLength(0);
+    await publishApproved({ reviewId: "r1", responseId: "resp-r1", store, google: g });
+
+    expect(g.published).toEqual([{ id: "r1", text: "Thanks!" }]);
   });
 
   it("does not mark the response posted when google.reply fails, and records the failure", async () => {
@@ -38,16 +95,17 @@ describe("approveAndPublish", () => {
     const g = new FakeGoogle();
     g.failNext("r3");
 
+    await approveResponse({ reviewId: "r3", responseId: "resp-r3", text: "Sorry to hear that.", ...OWNER, store });
     await expect(
-      approveAndPublish({ reviewId: "r3", text: "Sorry to hear that.", actor: "owner@example.com", role: "owner", store, google: g })
+      publishApproved({ reviewId: "r3", responseId: "resp-r3", store, google: g })
     ).rejects.toThrow(/Failed to publish/);
 
-    const response = await store.getLatestResponse("r3");
+    const response = await store.getResponse("r3", "resp-r3");
     expect(response?.postedAt).toBeNull();
+    expect(response?.publishClaimedAt).toBeNull();
     const failureEntry = store.audit.find(
       (a) => a.reviewId === "r3" && a.action === "response_post_failed"
     );
-    expect(failureEntry).toBeDefined();
     expect(failureEntry?.details).toMatchObject({
       responseId: "resp-r3",
       error: expect.any(String),
@@ -62,8 +120,9 @@ describe("approveAndPublish", () => {
       },
     };
 
+    await approveResponse({ reviewId: "r3", responseId: "resp-r3", text: "Sorry to hear that.", ...OWNER, store });
     await expect(
-      approveAndPublish({ reviewId: "r3", text: "Sorry to hear that.", actor: "owner@example.com", role: "owner", store, google })
+      publishApproved({ reviewId: "r3", responseId: "resp-r3", store, google })
     ).rejects.toThrow(/Failed to publish/);
 
     const failureEntry = store.audit.find(
@@ -79,26 +138,22 @@ describe("approveAndPublish", () => {
     const store = seededStore();
     const g = new FakeGoogle();
 
-    await approveAndPublish({ reviewId: "r1", text: "Thanks!", actor: "owner@example.com", role: "manager", store, google: g });
+    await approveResponse({ reviewId: "r1", responseId: "resp-r1", text: "Thanks!", actor: "manager@example.com", role: "manager", store });
+    await publishApproved({ reviewId: "r1", responseId: "resp-r1", store, google: g, actor: "manager@example.com" });
 
     expect(store.audit.some((a) => a.reviewId === "r1" && a.action === "response_approved")).toBe(true);
     expect(store.audit.some((a) => a.reviewId === "r1" && a.action === "response_posted")).toBe(true);
   });
 
-  it("approves without publishing when no google client is supplied", async () => {
+  it("approves without publishing: nothing reaches Google until publishApproved runs", async () => {
     const store = seededStore();
+    const g = new FakeGoogle();
 
-    const result = await approveAndPublish({
-      reviewId: "r2",
-      text: "Appreciate the feedback.",
-      actor: "owner@example.com",
-      role: "owner",
-      store,
-    });
+    await approveResponse({ reviewId: "r2", responseId: "resp-r2", text: "Appreciate the feedback.", ...OWNER, store });
 
-    expect(result.posted).toBe(false);
-    const response = await store.getLatestResponse("r2");
+    const response = await store.getResponse("r2", "resp-r2");
     expect(response?.approvedAt).not.toBeNull();
     expect(response?.postedAt).toBeNull();
+    expect(g.published).toHaveLength(0);
   });
 });
