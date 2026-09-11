@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { approveAndPublish } from "@/lib/reviews/approve";
+import { createPrismaReviewStore } from "@/lib/reviews/prisma-store";
 
 export async function POST(
   _request: NextRequest,
@@ -24,27 +26,15 @@ export async function POST(
       );
     }
 
-    await prisma.$transaction([
-      prisma.response.update({
-        where: { id: latestResponse.id },
-        data: {
-          approvedAt: new Date(),
-          finalText: latestResponse.finalText ?? latestResponse.draftText,
-        },
-      }),
-      prisma.review.update({
-        where: { id },
-        data: { status: "approved" },
-      }),
-      prisma.auditLog.create({
-        data: {
-          reviewId: id,
-          action: "response_approved",
-          actor: "dashboard",
-          details: { responseId: latestResponse.id },
-        },
-      }),
-    ]);
+    // Publishing to Google is deferred to the background job
+    // (postPendingGoogleResponses); this only records the approval.
+    await approveAndPublish({
+      reviewId: id,
+      text: latestResponse.finalText ?? latestResponse.draftText,
+      actor: "dashboard",
+      role: "owner",
+      store: createPrismaReviewStore(),
+    });
 
     return NextResponse.json({ message: "Response approved" });
   } catch (err) {

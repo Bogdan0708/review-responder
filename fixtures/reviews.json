@@ -1,0 +1,57 @@
+[
+  {
+    "id": "fixture-review-1",
+    "platform": "google",
+    "externalId": "demo-review-0001",
+    "authorName": "Alexei",
+    "rating": 5,
+    "reviewText": "The Example Bistro is our new favorite spot. The sarmale were incredible and the staff made us feel like family.",
+    "sentiment": "positive",
+    "topics": ["food-quality", "service"],
+    "reviewDate": "2026-08-01T18:30:00.000Z"
+  },
+  {
+    "id": "fixture-review-2",
+    "platform": "google",
+    "externalId": "demo-review-0002",
+    "authorName": "Marina",
+    "rating": 4,
+    "reviewText": "Great atmosphere at The Example Bistro and friendly service. The soup could have been a bit warmer but overall a lovely evening.",
+    "sentiment": "positive",
+    "topics": ["ambience", "temperature"],
+    "reviewDate": "2026-08-03T12:15:00.000Z"
+  },
+  {
+    "id": "fixture-review-3",
+    "platform": "google",
+    "externalId": "demo-review-0003",
+    "authorName": "Teodor",
+    "rating": 2,
+    "reviewText": "Waited almost 40 minutes for a table at The Example Bistro even though we had a reservation. The food was fine once it arrived.",
+    "sentiment": "negative",
+    "topics": ["wait-time", "reservations"],
+    "reviewDate": "2026-08-05T20:00:00.000Z"
+  },
+  {
+    "id": "fixture-review-4",
+    "platform": "google",
+    "externalId": "demo-review-0004",
+    "authorName": "Ionela",
+    "rating": 5,
+    "reviewText": "Best papanasi in town, hands down. The Example Bistro nailed the dessert menu and the coffee was excellent too.",
+    "sentiment": "positive",
+    "topics": ["desserts", "coffee"],
+    "reviewDate": "2026-08-07T09:45:00.000Z"
+  },
+  {
+    "id": "fixture-review-5",
+    "platform": "google",
+    "externalId": "demo-review-0005",
+    "authorName": "Bogdan",
+    "rating": 1,
+    "reviewText": "Ordered the mici at The Example Bistro and they were cold. Asked for a remake and never got a follow up from staff.",
+    "sentiment": "negative",
+    "topics": ["food-quality", "follow-up"],
+    "reviewDate": "2026-08-09T19:20:00.000Z"
+  }
+]

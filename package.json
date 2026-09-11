@@ -10,7 +10,9 @@
     "db:generate": "bunx prisma generate",
     "db:migrate": "bunx prisma migrate dev",
     "db:seed": "bunx prisma db seed",
-    "db:studio": "bunx prisma studio"
+    "db:studio": "bunx prisma studio",
+    "test": "vitest run",
+    "demo": "tsx scripts/demo.ts"
   },
   "prisma": {
     "seed": "bun prisma/seed.ts"
@@ -33,7 +35,9 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "tsx": "^4.23.13",
+    "typescript": "^5",
+    "vitest": "^3.2.7"
   },
   "ignoreScripts": [
     "sharp",

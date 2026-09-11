@@ -2,6 +2,8 @@ import { prisma } from "../db";
 import { withRetry } from "../config/retry";
 import { notifyWebhook } from "../webhooks/notify";
 import { getAccessToken, clearTokenCache } from "./auth";
+import { approveAndPublish } from "../reviews/approve";
+import { createPrismaReviewStore } from "../reviews/prisma-store";
 
 const GBP_API_BASE = "https://mybusiness.googleapis.com/v4";
 
@@ -69,6 +71,7 @@ export async function postPendingGoogleResponses(): Promise<{
     },
   });
 
+  const store = createPrismaReviewStore();
   let posted = 0;
   let failed = 0;
 
@@ -79,28 +82,27 @@ export async function postPendingGoogleResponses(): Promise<{
     const replyText = response.finalText ?? response.draftText;
 
     try {
-      await postReplyToGoogle(review.externalId, replyText);
-
-      await prisma.$transaction([
-        prisma.response.update({
-          where: { id: response.id },
-          data: { postedAt: new Date() },
-        }),
-        prisma.review.update({
-          where: { id: review.id },
-          data: { status: "posted" },
-        }),
-        prisma.auditLog.create({
-          data: {
-            reviewId: review.id,
-            action: "response_posted",
-            details: {
-              platform: "google",
-              responseId: response.id,
-            },
+      await approveAndPublish({
+        reviewId: review.id,
+        text: replyText,
+        actor: "system:cron",
+        role: "manager",
+        store,
+        google: {
+          async reply(_reviewId: string, text: string) {
+            try {
+              await postReplyToGoogle(review.externalId, text);
+              return { ok: true };
+            } catch (err) {
+              console.error(
+                `Failed to post response for review ${review.id}:`,
+                err
+              );
+              return { ok: false };
+            }
           },
-        }),
-      ]);
+        },
+      });
 
       notifyWebhook("response_posted", {
         reviewId: review.id,
@@ -114,17 +116,6 @@ export async function postPendingGoogleResponses(): Promise<{
         `Failed to post response for review ${review.id}:`,
         err
       );
-
-      await prisma.auditLog.create({
-        data: {
-          reviewId: review.id,
-          action: "response_post_failed",
-          details: {
-            platform: "google",
-            error: err instanceof Error ? err.message : String(err),
-          },
-        },
-      });
 
       failed++;
     }

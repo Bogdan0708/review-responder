@@ -1,0 +1,41 @@
+Review Responder — offline demo (synthetic data, no accounts needed)
+
+Review from Alexei (5★): "The Example Bistro is our new favorite spot. The sarmale were incredible and the staff made us feel like family."
+  draft: "Thank you so much, Alexei! We're thrilled you enjoyed The Example Bistro and hope to see you again soon."
+  approved + posted (responseId=resp-fixture-review-1)
+
+Review from Marina (4★): "Great atmosphere at The Example Bistro and friendly service. The soup could have been a bit warmer but overall a lovely evening."
+  draft: "Thank you so much, Marina! We're thrilled you enjoyed The Example Bistro and hope to see you again soon."
+  approved + posted (responseId=resp-fixture-review-2)
+
+Review from Teodor (2★): "Waited almost 40 minutes for a table at The Example Bistro even though we had a reservation. The food was fine once it arrived."
+  draft: "Hi Teodor, thank you for the honest feedback — we're sorry we fell short and would love the chance to make it right."
+  approved + posted (responseId=resp-fixture-review-3)
+
+Review from Ionela (5★): "Best papanasi in town, hands down. The Example Bistro nailed the dessert menu and the coffee was excellent too."
+  draft: "Thank you so much, Ionela! We're thrilled you enjoyed The Example Bistro and hope to see you again soon."
+  approved + posted (responseId=resp-fixture-review-4)
+
+Review from Bogdan (1★): "Ordered the mici at The Example Bistro and they were cold. Asked for a remake and never got a follow up from staff."
+  draft: "Hi Bogdan, thank you for the honest feedback — we're sorry we fell short and would love the chance to make it right."
+  approved + posted (responseId=resp-fixture-review-5)
+
+--- Idempotency check: approving review 1 again must not publish twice ---
+Second approve call for "fixture-review-1" returned alreadyPosted=true; google.reply was called for it 1 time(s) in total.
+
+--- Permission check: a viewer role cannot approve or publish ---
+Rejected as expected: Actor "intern@example.com" with role "viewer" is not permitted to approve or publish responses
+
+--- Audit trail ---
+  [2026-09-11T11:12:49.368Z] response_approved reviewId=fixture-review-1 actor=owner@example.com
+  [2026-09-11T11:12:49.368Z] response_posted reviewId=fixture-review-1 actor=owner@example.com
+  [2026-09-11T11:12:49.369Z] response_approved reviewId=fixture-review-2 actor=owner@example.com
+  [2026-09-11T11:12:49.369Z] response_posted reviewId=fixture-review-2 actor=owner@example.com
+  [2026-09-11T11:12:49.370Z] response_approved reviewId=fixture-review-3 actor=owner@example.com
+  [2026-09-11T11:12:49.370Z] response_posted reviewId=fixture-review-3 actor=owner@example.com
+  [2026-09-11T11:12:49.370Z] response_approved reviewId=fixture-review-4 actor=owner@example.com
+  [2026-09-11T11:12:49.370Z] response_posted reviewId=fixture-review-4 actor=owner@example.com
+  [2026-09-11T11:12:49.371Z] response_approved reviewId=fixture-review-5 actor=owner@example.com
+  [2026-09-11T11:12:49.371Z] response_posted reviewId=fixture-review-5 actor=owner@example.com
+
+Done. 5 response(s) published via FakeGoogle.
