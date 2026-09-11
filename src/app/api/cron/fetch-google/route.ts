@@ -3,11 +3,19 @@ import { fetchGoogleReviews } from "@/lib/google/reviews";
 import { postPendingGoogleResponses } from "@/lib/google/respond";
 
 export async function POST(request: NextRequest) {
-  // Simple auth: check for cron secret or localhost origin
+  // The middleware exempts /api/cron, so this shared secret is the only thing
+  // guarding the endpoint: an unset CRON_SECRET must fail closed, not open.
   const authHeader = request.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
 
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  if (!cronSecret) {
+    return NextResponse.json(
+      { error: "CRON_SECRET is not configured" },
+      { status: 503 }
+    );
+  }
+
+  if (authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

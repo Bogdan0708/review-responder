@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { readSession } from "@/lib/session";
 
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const session = await readSession(request);
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const { id } = await params;
     const body = await request.json();
@@ -28,6 +34,13 @@ export async function PUT(
       );
     }
 
+    if (response.postedAt) {
+      return NextResponse.json(
+        { error: "Response has already been published and cannot be edited" },
+        { status: 409 }
+      );
+    }
+
     await prisma.$transaction([
       prisma.response.update({
         where: { id: responseId },
@@ -37,7 +50,7 @@ export async function PUT(
         data: {
           reviewId: id,
           action: "response_edited",
-          actor: "dashboard",
+          actor: session.actor,
           details: { responseId },
         },
       }),

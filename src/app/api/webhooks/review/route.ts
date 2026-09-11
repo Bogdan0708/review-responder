@@ -25,6 +25,20 @@ function validatePayload(body: unknown): body is IngestReviewInput {
 }
 
 export async function POST(request: NextRequest) {
+  // The middleware exempts /api/webhooks (the callers are machines, not
+  // browsers), so this shared secret is the only thing guarding ingestion.
+  // An unset WEBHOOK_SECRET fails closed.
+  const webhookSecret = process.env.WEBHOOK_SECRET;
+  if (!webhookSecret) {
+    return NextResponse.json(
+      { error: "WEBHOOK_SECRET is not configured" },
+      { status: 503 }
+    );
+  }
+  if (request.headers.get("x-webhook-secret") !== webhookSecret) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const body = await request.json();
 

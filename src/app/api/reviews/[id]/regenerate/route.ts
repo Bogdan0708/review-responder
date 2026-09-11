@@ -1,11 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { readSession } from "@/lib/session";
 import { generateResponse } from "@/lib/ai/generate";
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Verified here as well as in the middleware (defence in depth); the actor
+  // is derived from the session, not hard-coded.
+  const session = await readSession(request);
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const { id } = await params;
     const review = await prisma.review.findUnique({ where: { id } });
@@ -40,7 +48,7 @@ export async function POST(
         data: {
           reviewId: id,
           action: "draft_regenerated",
-          actor: "dashboard",
+          actor: session.actor,
           details: { responseId: response.id, model: result.model },
         },
       }),
