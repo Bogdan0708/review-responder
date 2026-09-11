@@ -1,4 +1,8 @@
 Review Responder — offline demo (synthetic data, no accounts needed)
+> review-responder@0.1.0 demo
+> tsx scripts/demo.ts
+
+Review Responder — offline demo (synthetic data, no accounts needed)
 
 Review from Alexei (5★): "The Example Bistro is our new favorite spot. The sarmale were incredible and the staff made us feel like family."
   draft: "Thank you so much, Alexei! We're thrilled you enjoyed The Example Bistro and hope to see you again soon."
@@ -20,22 +24,25 @@ Review from Radu (1★): "Ordered the mici at The Example Bistro and they were c
   draft: "Hi Radu, thank you for the honest feedback — we're sorry we fell short and would love the chance to make it right."
   approved + posted (responseId=resp-fixture-review-5)
 
---- Idempotency check: approving review 1 again must not publish twice ---
-Second approve call for "fixture-review-1" returned alreadyPosted=true; google.reply was called for it 1 time(s) in total.
+--- Idempotency check: publishing review 1 again must not publish twice ---
+Second publish call for "fixture-review-1" returned alreadyPosted=true; google.reply was called for it 1 time(s) in total.
 
---- Permission check: a viewer role cannot approve or publish ---
-Rejected as expected: Actor "intern@example.com" with role "viewer" is not permitted to approve or publish responses
+--- Concurrency check: two workers racing to publish one approved response ---
+Two concurrent publishes: google.reply called 1 time(s), 1 caller(s) lost the claim, 1 response_posted audit entry.
+
+--- Permission check: a viewer role cannot approve ---
+Rejected as expected: Actor "intern@example.com" with role "viewer" is not permitted to approve responses
 
 --- Audit trail ---
-  [2026-09-11T11:35:42.259Z] response_approved reviewId=fixture-review-1 actor=owner@example.com
-  [2026-09-11T11:35:42.259Z] response_posted reviewId=fixture-review-1 actor=owner@example.com
-  [2026-09-11T11:35:42.261Z] response_approved reviewId=fixture-review-2 actor=owner@example.com
-  [2026-09-11T11:35:42.261Z] response_posted reviewId=fixture-review-2 actor=owner@example.com
-  [2026-09-11T11:35:42.264Z] response_approved reviewId=fixture-review-3 actor=owner@example.com
-  [2026-09-11T11:35:42.264Z] response_posted reviewId=fixture-review-3 actor=owner@example.com
-  [2026-09-11T11:35:42.267Z] response_approved reviewId=fixture-review-4 actor=owner@example.com
-  [2026-09-11T11:35:42.267Z] response_posted reviewId=fixture-review-4 actor=owner@example.com
-  [2026-09-11T11:35:42.269Z] response_approved reviewId=fixture-review-5 actor=owner@example.com
-  [2026-09-11T11:35:42.269Z] response_posted reviewId=fixture-review-5 actor=owner@example.com
+  [2026-09-11T21:32:49.747Z] response_approved reviewId=fixture-review-1 actor=owner@example.com
+  [2026-09-11T21:32:49.747Z] response_posted reviewId=fixture-review-1 actor=owner@example.com
+  [2026-09-11T21:32:49.748Z] response_approved reviewId=fixture-review-2 actor=owner@example.com
+  [2026-09-11T21:32:49.748Z] response_posted reviewId=fixture-review-2 actor=owner@example.com
+  [2026-09-11T21:32:49.748Z] response_approved reviewId=fixture-review-3 actor=owner@example.com
+  [2026-09-11T21:32:49.748Z] response_posted reviewId=fixture-review-3 actor=owner@example.com
+  [2026-09-11T21:32:49.749Z] response_approved reviewId=fixture-review-4 actor=owner@example.com
+  [2026-09-11T21:32:49.749Z] response_posted reviewId=fixture-review-4 actor=owner@example.com
+  [2026-09-11T21:32:49.749Z] response_approved reviewId=fixture-review-5 actor=owner@example.com
+  [2026-09-11T21:32:49.749Z] response_posted reviewId=fixture-review-5 actor=owner@example.com
 
 Done. 5 response(s) published via FakeGoogle.
