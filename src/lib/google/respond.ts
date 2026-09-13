@@ -1,5 +1,4 @@
 import { prisma } from "../db";
-import { withRetry } from "../config/retry";
 import { notifyWebhook } from "../webhooks/notify";
 import { getAccessToken, clearTokenCache } from "./auth";
 import { publishApproved, type GoogleClient } from "../reviews/approve";
@@ -13,7 +12,7 @@ function getGoogleLocationName(): string {
 
   if (!accountId || !locationId) {
     throw new Error(
-      "Missing GOOGLE_ACCOUNT_ID or GOOGLE_LOCATION_ID in environment."
+      "Missing GOOGLE_ACCOUNT_ID or GOOGLE_LOCATION_ID in environment.",
     );
   }
 
@@ -22,15 +21,17 @@ function getGoogleLocationName(): string {
 
 async function postReplyToGoogle(
   googleReviewId: string,
-  replyText: string
+  replyText: string,
 ): Promise<void> {
   const locationName = getGoogleLocationName();
   const url = `${GBP_API_BASE}/${locationName}/reviews/${googleReviewId}/reply`;
 
-  await withRetry(async () => {
+  // A network failure/5xx may follow an accepted PUT. Never retry this write.
+  {
     const token = await getAccessToken();
     const res = await fetch(url, {
       method: "PUT",
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
@@ -47,16 +48,16 @@ async function postReplyToGoogle(
       const body = await res.text();
       throw new Error(`Google reply API error (${res.status}): ${body}`);
     }
-
-    return res;
-  });
+  }
 }
 
 /**
  * The real `GoogleClient` for one review. The text always comes from
  * `publishApproved` (the stored approved text), never from the caller.
  */
-export function createGoogleReplyClient(externalReviewId: string): GoogleClient {
+export function createGoogleReplyClient(
+  externalReviewId: string,
+): GoogleClient {
   return {
     async reply(reviewId: string, text: string) {
       try {
@@ -142,7 +143,7 @@ export async function postPendingGoogleResponses(): Promise<{
     } catch (err) {
       console.error(
         `Failed to post response ${target.responseId} for review ${target.reviewId}:`,
-        err
+        err,
       );
 
       failed++;

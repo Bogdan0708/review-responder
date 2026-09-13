@@ -14,6 +14,7 @@ export interface FakeReviewRow {
   status: string;
   externalId: string;
   authorName: string | null;
+  version?: number;
 }
 
 export interface FakeResponseRow {
@@ -25,6 +26,10 @@ export interface FakeResponseRow {
   approvedAt: Date | null;
   postedAt: Date | null;
   publishClaimedAt: Date | null;
+  version?: number;
+  approvedText?: string | null;
+  publicationToken?: string | null;
+  publicationState?: string;
 }
 
 export interface FakeAuditRow {
@@ -51,6 +56,34 @@ function matchesNullFilter(value: unknown, filter: unknown): boolean {
   return value === filter;
 }
 
+function normalized(row: any) {
+  return {
+    version: 0,
+    approvedText: row.approvedAt ? (row.finalText ?? row.draftText) : null,
+    publicationToken: null,
+    publicationState: row.postedAt
+      ? "posted"
+      : row.publishClaimedAt
+        ? "reconciliation"
+        : "idle",
+    ...row,
+  };
+}
+function matches(row: any, where: any): boolean {
+  const r = normalized(row);
+  return Object.entries(where).every(([key, value]) =>
+    key === "OR"
+      ? (value as any[]).some((w) => matches(r, w))
+      : matchesNullFilter(r[key], value),
+  );
+}
+function assign(row: any, data: any) {
+  for (const [k, v] of Object.entries(data))
+    row[k] =
+      v && typeof v === "object" && "increment" in v
+        ? (row[k] ?? 0) + (v as any).increment
+        : v;
+}
 export class FakePrisma {
   reviews: FakeReviewRow[] = [];
   responses: FakeResponseRow[] = [];
@@ -62,7 +95,7 @@ export class FakePrisma {
       const rows = this.reviews.filter(
         (r) =>
           (where.platform === undefined || r.platform === where.platform) &&
-          (where.status === undefined || r.status === where.status)
+          (where.status === undefined || r.status === where.status),
       );
       const responseFilter = args?.include?.responses;
       return rows.map((r) => {
@@ -75,14 +108,12 @@ export class FakePrisma {
               (w.approvedAt === undefined ||
                 matchesNullFilter(resp.approvedAt, w.approvedAt)) &&
               (w.postedAt === undefined ||
-                matchesNullFilter(resp.postedAt, w.postedAt))
+                matchesNullFilter(resp.postedAt, w.postedAt)),
           )
-          .sort(
-            (a, b) =>
-              b.generatedAt.getTime() - a.generatedAt.getTime()
-          );
-        if (responseFilter.take) responses = responses.slice(0, responseFilter.take);
-        return { ...r, responses: responses.map((resp) => ({ ...resp })) };
+          .sort((a, b) => b.generatedAt.getTime() - a.generatedAt.getTime());
+        if (responseFilter.take)
+          responses = responses.slice(0, responseFilter.take);
+        return { ...r, responses: responses.map((resp) => normalized(resp)) };
       });
     }),
 
@@ -90,7 +121,7 @@ export class FakePrisma {
       const row = this.reviews.find((r) => r.id === args.where.id);
       if (!row) return null;
       const responseFilter = args?.include?.responses;
-      if (!responseFilter) return { ...row };
+      if (!responseFilter) return normalized(row);
       const w = responseFilter.where ?? {};
       let responses = this.responses
         .filter((resp) => resp.reviewId === row.id)
@@ -99,60 +130,48 @@ export class FakePrisma {
             (w.approvedAt === undefined ||
               matchesNullFilter(resp.approvedAt, w.approvedAt)) &&
             (w.postedAt === undefined ||
-              matchesNullFilter(resp.postedAt, w.postedAt))
+              matchesNullFilter(resp.postedAt, w.postedAt)),
         )
         .sort((a, b) => b.generatedAt.getTime() - a.generatedAt.getTime());
-      if (responseFilter.take) responses = responses.slice(0, responseFilter.take);
-      return { ...row, responses: responses.map((resp) => ({ ...resp })) };
+      if (responseFilter.take)
+        responses = responses.slice(0, responseFilter.take);
+      return { ...row, responses: responses.map((resp) => normalized(resp)) };
     }),
 
     update: vi.fn(async (args: any) => {
       const row = this.reviews.find((r) => r.id === args.where.id);
       if (!row) throw new Error(`review ${args.where.id} not found`);
-      Object.assign(row, args.data);
-      return { ...row };
+      assign(row, args.data);
+      return normalized(row);
     }),
   };
 
   response = {
     findUnique: vi.fn(async (args: any) => {
       const row = this.responses.find((r) => r.id === args.where.id);
-      return row ? { ...row } : null;
+      return row ? normalized(row) : null;
     }),
 
     findFirst: vi.fn(async (args: any) => {
       const w = args?.where ?? {};
       const rows = this.responses
-        .filter(
-          (r) =>
-            (w.id === undefined || r.id === w.id) &&
-            (w.reviewId === undefined || r.reviewId === w.reviewId)
-        )
+        .filter((r) => matches(r, w))
         .sort((a, b) => b.generatedAt.getTime() - a.generatedAt.getTime());
-      return rows[0] ? { ...rows[0] } : null;
+      return rows[0] ? normalized(rows[0]) : null;
     }),
 
     update: vi.fn(async (args: any) => {
       const row = this.responses.find((r) => r.id === args.where.id);
       if (!row) throw new Error(`response ${args.where.id} not found`);
-      Object.assign(row, args.data);
-      return { ...row };
+      assign(row, args.data);
+      return normalized(row);
     }),
 
     /** The atomic claim / release both go through updateMany. */
     updateMany: vi.fn(async (args: any) => {
       const w = args?.where ?? {};
-      const matched = this.responses.filter(
-        (r) =>
-          (w.id === undefined || r.id === w.id) &&
-          (w.reviewId === undefined || r.reviewId === w.reviewId) &&
-          (w.approvedAt === undefined || matchesNullFilter(r.approvedAt, w.approvedAt)) &&
-          (w.postedAt === undefined || matchesNullFilter(r.postedAt, w.postedAt)) &&
-          (w.publishClaimedAt === undefined ||
-            matchesNullFilter(r.publishClaimedAt, w.publishClaimedAt)) &&
-          (w.reviewId === undefined || r.reviewId === w.reviewId)
-      );
-      for (const row of matched) Object.assign(row, args.data);
+      const matched = this.responses.filter((r) => matches(r, w));
+      for (const row of matched) assign(row, args.data);
       return { count: matched.length };
     }),
   };
@@ -166,7 +185,20 @@ export class FakePrisma {
     deleteMany: vi.fn(async () => ({ count: 0 })),
   };
 
-  $transaction = vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops));
+  $transaction = vi.fn(async (ops: any) => {
+    if (typeof ops !== "function") return Promise.all(ops);
+    const backup = structuredClone({
+      reviews: this.reviews,
+      responses: this.responses,
+      auditEntries: this.auditEntries,
+    });
+    try {
+      return await ops(this);
+    } catch (error) {
+      Object.assign(this, backup);
+      throw error;
+    }
+  });
 }
 
 /** Build the object that `@/lib/db`'s `prisma` export is mocked with. */

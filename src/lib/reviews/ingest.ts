@@ -1,3 +1,4 @@
+import { saveRegeneratedDraft } from "./transitions";
 import { prisma } from "../db";
 import { generateResponse } from "../ai/generate";
 import { notifyWebhook } from "../webhooks/notify";
@@ -17,7 +18,7 @@ interface IngestResult {
 }
 
 export function classifySentiment(
-  rating: number
+  rating: number,
 ): "positive" | "neutral" | "negative" {
   if (rating >= 4) return "positive";
   if (rating === 3) return "neutral";
@@ -27,18 +28,15 @@ export function classifySentiment(
 const TOPIC_PATTERNS: Record<string, RegExp> = {
   service:
     /\b(service|staff|waiter|waitress|server|rude|friendly|attentive|slow)\b/i,
-  "wait time":
-    /\b(wait|waiting|slow|quick|fast|long time|minutes|hour)\b/i,
-  ambiance:
-    /\b(ambiance|atmosphere|decor|music|loud|cozy|clean|dirty)\b/i,
-  price:
-    /\b(price|expensive|cheap|affordable|value|worth|overpriced)\b/i,
+  "wait time": /\b(wait|waiting|slow|quick|fast|long time|minutes|hour)\b/i,
+  ambiance: /\b(ambiance|atmosphere|decor|music|loud|cozy|clean|dirty)\b/i,
+  price: /\b(price|expensive|cheap|affordable|value|worth|overpriced)\b/i,
   portion: /\b(portion|size|small|large|big|generous|tiny)\b/i,
 };
 
 export function extractTopics(
   text: string,
-  menuHighlights: string[] = []
+  menuHighlights: string[] = [],
 ): string[] {
   const topics: string[] = [];
 
@@ -65,7 +63,7 @@ export function containsFoodSafetyKeywords(text: string): boolean {
 }
 
 export async function ingestReview(
-  input: IngestReviewInput
+  input: IngestReviewInput,
 ): Promise<IngestResult> {
   const existing = await prisma.review.findUnique({
     where: {
@@ -135,7 +133,7 @@ export async function ingestReview(
 
   // Generate draft async — don't block webhook response
   processReviewDraft(review.id).catch((err) =>
-    console.error(`Draft generation failed for review ${review.id}:`, err)
+    console.error(`Draft generation failed for review ${review.id}:`, err),
   );
 
   return { reviewId: review.id, status: "created" };
@@ -146,6 +144,8 @@ async function processReviewDraft(reviewId: string): Promise<void> {
     where: { id: reviewId },
   });
 
+  if (review.status !== "pending") return;
+
   const result = await generateResponse({
     reviewText: review.reviewText,
     authorName: review.authorName,
@@ -154,40 +154,13 @@ async function processReviewDraft(reviewId: string): Promise<void> {
     topics: review.topics as string[],
   });
 
-  await prisma.response.create({
-    data: {
-      reviewId: review.id,
-      draftText: result.text,
-      llmModel: result.model,
-      llmTokensUsed: result.tokensUsed,
-    },
-  });
-
-  // Check auto-approve eligibility
-  const autoApproveSetting = await prisma.setting.findUnique({
-    where: { key: "auto_approve" },
-  });
-  const autoApproveEnabled =
-    (autoApproveSetting?.value as { enabled?: boolean })?.enabled ?? false;
-
-  const shouldAutoApprove =
-    autoApproveEnabled &&
-    review.sentiment === "positive" &&
-    review.rating >= 4 &&
-    !containsFoodSafetyKeywords(review.reviewText);
-
-  const newStatus = shouldAutoApprove ? "approved" : "draft_ready";
-
-  await prisma.review.update({
-    where: { id: review.id },
-    data: { status: newStatus },
-  });
-
-  await prisma.auditLog.create({
-    data: {
-      reviewId: review.id,
-      action: shouldAutoApprove ? "auto_approved" : "draft_generated",
-      details: { model: result.model, tokensUsed: result.tokensUsed },
-    },
-  });
+  // Generation may finish after an owner action. The version check discards
+  // stale work, and all new drafts require an explicit owner/manager approval.
+  await saveRegeneratedDraft(
+    review.id,
+    review.version,
+    result,
+    "system:ingest",
+    "draft_generated",
+  );
 }

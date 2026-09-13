@@ -4,12 +4,10 @@ import { useEffect, useState } from "react";
 
 interface Settings {
   brand_voice?: { systemPrompt: string; menuHighlights: string[] };
-  auto_approve?: { enabled: boolean };
   llm_provider?: { primary: string; fallback: string; local: string };
 }
 
 export default function SettingsPage() {
-  const [settings, setSettings] = useState<Settings>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [message, setMessage] = useState<{
@@ -19,7 +17,6 @@ export default function SettingsPage() {
 
   const [brandPrompt, setBrandPrompt] = useState("");
   const [menuHighlights, setMenuHighlights] = useState("");
-  const [autoApprove, setAutoApprove] = useState(false);
   const [llmPrimary, setLlmPrimary] = useState("claude");
   const [llmFallback, setLlmFallback] = useState("openai");
   const [llmLocal, setLlmLocal] = useState("lm-studio");
@@ -28,13 +25,9 @@ export default function SettingsPage() {
     async function load() {
       try {
         const res = await fetch("/api/settings");
-        const data = await res.json();
-        setSettings(data);
+        const data: Settings = await res.json();
         setBrandPrompt(data.brand_voice?.systemPrompt ?? "");
-        setMenuHighlights(
-          (data.brand_voice?.menuHighlights ?? []).join(", ")
-        );
-        setAutoApprove(data.auto_approve?.enabled ?? false);
+        setMenuHighlights((data.brand_voice?.menuHighlights ?? []).join(", "));
         setLlmPrimary(data.llm_provider?.primary ?? "claude");
         setLlmFallback(data.llm_provider?.fallback ?? "openai");
         setLlmLocal(data.llm_provider?.local ?? "lm-studio");
@@ -57,7 +50,10 @@ export default function SettingsPage() {
         body: JSON.stringify({ key, value }),
       });
       if (!res.ok) throw new Error("Failed to save");
-      setMessage({ type: "success", text: `${key.replace(/_/g, " ")} updated` });
+      setMessage({
+        type: "success",
+        text: `${key.replace(/_/g, " ")} updated`,
+      });
     } catch (err) {
       setMessage({
         type: "error",
@@ -146,36 +142,10 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        {/* Auto-Approve */}
-        <section className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
-          <h2 className="mb-4 text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-            Auto-Approve
-          </h2>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-zinc-700 dark:text-zinc-300">
-                Automatically approve responses for positive reviews (4-5 stars)
-                without food safety concerns.
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                const newVal = !autoApprove;
-                setAutoApprove(newVal);
-                saveSetting("auto_approve", { enabled: newVal });
-              }}
-              className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                autoApprove ? "bg-blue-600" : "bg-zinc-300 dark:bg-zinc-600"
-              }`}
-            >
-              <span
-                className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                  autoApprove ? "translate-x-5" : "translate-x-0"
-                }`}
-              />
-            </button>
-          </div>
-        </section>
+        <p className="text-sm text-zinc-500">
+          Every response requires an owner or manager approval before
+          publication.
+        </p>
 
         {/* LLM Provider */}
         <section className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
@@ -251,7 +221,7 @@ export default function SettingsPage() {
                   </span>
                   <span className="text-xs text-zinc-400">Set in .env</span>
                 </div>
-              )
+              ),
             )}
           </div>
         </section>

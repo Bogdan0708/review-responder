@@ -1,12 +1,12 @@
+import { randomUUID } from "node:crypto";
 import {
-  publishClaimTtlMs,
+  TransitionConflict,
   type ReviewStore,
   type StoredReview,
   type StoredResponse,
   type AuditEntryInput,
   type PublishClaim,
 } from "./approve";
-
 export interface SeedResponseInput {
   id: string;
   draftText: string;
@@ -15,28 +15,18 @@ export interface SeedResponseInput {
   postedAt?: string | null;
   publishClaimedAt?: string | null;
 }
-
 export interface AuditRecord extends AuditEntryInput {
   createdAt: string;
 }
-
-/**
- * In-memory implementation of ReviewStore, used by unit tests and by
- * `npm run demo`. Keeps responses per review in insertion order; the
- * "latest" response is the last one seeded/created for that review.
- */
 export class MemoryReviewStore implements ReviewStore {
   private reviews = new Map<string, StoredReview>();
   private responses = new Map<string, StoredResponse[]>();
   readonly audit: AuditRecord[] = [];
-
-  seedReview(review: StoredReview, response?: SeedResponseInput): void {
+  seedReview(review: StoredReview, response?: SeedResponseInput) {
     this.reviews.set(review.id, { ...review });
     if (response) this.addResponse(review.id, response);
   }
-
-  /** Append a newer response, as regeneration does in production. */
-  addResponse(reviewId: string, response: SeedResponseInput): void {
+  addResponse(reviewId: string, response: SeedResponseInput) {
     const list = this.responses.get(reviewId) ?? [];
     list.push({
       id: response.id,
@@ -45,110 +35,116 @@ export class MemoryReviewStore implements ReviewStore {
       approvedAt: response.approvedAt ?? null,
       postedAt: response.postedAt ?? null,
       publishClaimedAt: response.publishClaimedAt ?? null,
+      version: 0,
+      approvedText: response.approvedAt
+        ? (response.finalText ?? response.draftText)
+        : null,
+      publicationState: response.publishClaimedAt ? "reconciliation" : "idle",
+      publicationToken: null,
     });
     this.responses.set(reviewId, list);
   }
-
-  async getReview(id: string): Promise<StoredReview | null> {
-    return this.reviews.get(id) ?? null;
+  async getReview(id: string) {
+    const review = this.reviews.get(id);
+    return review ? { ...review } : null;
   }
-
-  /**
-   * Reads return detached copies, as a database read does: a caller that holds
-   * a `StoredResponse` is holding a snapshot, not a live row.
-   */
-  async getLatestResponse(reviewId: string): Promise<StoredResponse | null> {
-    const list = this.responses.get(reviewId);
-    if (!list || list.length === 0) return null;
-    return { ...list[list.length - 1] };
+  async getLatestResponse(id: string) {
+    const r = this.responses.get(id)?.at(-1);
+    return r ? { ...r } : null;
   }
-
-  async getResponse(
-    reviewId: string,
-    responseId: string
-  ): Promise<StoredResponse | null> {
-    const response = this.findResponse(reviewId, responseId);
-    return response ? { ...response } : null;
+  async getResponse(id: string, rid: string) {
+    const r = this.find(id, rid);
+    return r ? { ...r } : null;
   }
-
-  /** Test/demo helper: write straight to a stored row (simulates a racing write). */
   patchResponse(
-    reviewId: string,
-    responseId: string,
-    patch: Partial<Omit<StoredResponse, "id">>
-  ): void {
-    const response = this.findResponse(reviewId, responseId);
-    if (response) Object.assign(response, patch);
+    id: string,
+    rid: string,
+    patch: Partial<Omit<StoredResponse, "id">>,
+  ) {
+    const r = this.find(id, rid);
+    if (r) Object.assign(r, patch);
   }
-
   async markApproved(
-    reviewId: string,
-    responseId: string,
-    text: string
-  ): Promise<void> {
-    const review = this.reviews.get(reviewId);
-    if (review) review.status = "approved";
-    const response = this.findResponse(reviewId, responseId);
-    if (response) {
-      response.approvedAt = new Date().toISOString();
-      response.finalText = text;
-    }
+    id: string,
+    rid: string,
+    text: string,
+    version: number,
+    actor: string,
+  ) {
+    const r = this.find(id, rid);
+    if (
+      !r ||
+      r.version !== version ||
+      r.approvedAt ||
+      r.publishClaimedAt ||
+      r.postedAt ||
+      this.responses.get(id)?.at(-1)?.id !== rid ||
+      this.responses
+        .get(id)
+        ?.some((response) => response.postedAt || response.publishClaimedAt)
+    )
+      throw new TransitionConflict("Response changed or already approved");
+    r.approvedAt = new Date().toISOString();
+    r.approvedText = text;
+    r.finalText = text;
+    r.version++;
+    this.reviews.get(id)!.status = "approved";
+    await this.writeAudit({
+      reviewId: id,
+      action: "response_approved",
+      actor,
+      details: { responseId: rid, approvedText: text, version },
+    });
   }
-
-  async markPosted(reviewId: string, responseId: string): Promise<void> {
-    const review = this.reviews.get(reviewId);
-    if (review) review.status = "posted";
-    const response = this.findResponse(reviewId, responseId);
-    if (response) {
-      response.postedAt = new Date().toISOString();
-    }
-  }
-
-  /**
-   * Same semantics as the Prisma `updateMany` claim: approved, not posted, and
-   * either unclaimed or holding a claim older than the TTL (a run that died
-   * mid-publish). The check and the write happen with no `await` between them,
-   * so concurrent callers on the single-threaded event loop see the same
-   * all-or-nothing behaviour as the conditional SQL UPDATE.
-   */
   async claimForPublish(
-    reviewId: string,
-    responseId: string
+    id: string,
+    rid: string,
+    actor: string,
   ): Promise<PublishClaim> {
-    const response = this.findResponse(reviewId, responseId);
-    if (!response) return { claimed: false, reclaimed: false };
-    if (!response.approvedAt) return { claimed: false, reclaimed: false };
-    if (response.postedAt) return { claimed: false, reclaimed: false };
-
-    const now = Date.now();
-    let reclaimed = false;
-    if (response.publishClaimedAt) {
-      const heldSince = new Date(response.publishClaimedAt).getTime();
-      const stale =
-        Number.isFinite(heldSince) && now - heldSince >= publishClaimTtlMs();
-      if (!stale) return { claimed: false, reclaimed: false };
-      reclaimed = true;
-    }
-
-    response.publishClaimedAt = new Date(now).toISOString();
-    return { claimed: true, reclaimed };
+    const r = this.find(id, rid);
+    if (
+      !r ||
+      !r.approvedAt ||
+      r.approvedText === null ||
+      this.reviews.get(id)?.status !== "approved" ||
+      this.responses.get(id)?.some((s) => s.postedAt || s.publishClaimedAt)
+    )
+      return { claimed: false };
+    const token = randomUUID();
+    r.publicationToken = token;
+    r.publishClaimedAt = new Date().toISOString();
+    r.publicationState = "reconciliation";
+    this.reviews.get(id)!.status = "reconciliation";
+    await this.writeAudit({
+      reviewId: id,
+      action: "response_post_attempt_started",
+      actor,
+      details: { responseId: rid, token },
+    });
+    return { claimed: true, token };
   }
-
-  async releaseClaim(reviewId: string, responseId: string): Promise<void> {
-    const response = this.findResponse(reviewId, responseId);
-    if (response && !response.postedAt && response.publishClaimedAt) {
-      response.publishClaimedAt = null;
-    }
+  async markPosted(id: string, rid: string, token: string, actor: string) {
+    const r = this.find(id, rid);
+    if (
+      !r ||
+      r.publicationToken !== token ||
+      r.publicationState !== "reconciliation"
+    )
+      throw new TransitionConflict("Invalid publication token");
+    r.postedAt = new Date().toISOString();
+    r.publicationState = "posted";
+    this.reviews.get(id)!.status = "posted";
+    await this.writeAudit({
+      reviewId: id,
+      action: "response_posted",
+      actor,
+      details: { responseId: rid, token },
+    });
   }
-
-  async writeAudit(entry: AuditEntryInput): Promise<void> {
+  async writeAudit(entry: AuditEntryInput) {
     this.audit.push({ ...entry, createdAt: new Date().toISOString() });
   }
-
-  private findResponse(
-    reviewId: string,
-    responseId: string
-  ): StoredResponse | undefined {
-    return this.responses.get(reviewId)?.find((r) => r.id === responseId);
+  private find(id: string, rid: string) {
+    return this.responses.get(id)?.find((r) => r.id === rid);
   }
 }

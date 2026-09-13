@@ -1,9 +1,8 @@
 # Stage 1: Dependencies
 FROM node:22-alpine AS deps
-RUN corepack enable && corepack prepare pnpm@latest --activate
 WORKDIR /app
-COPY package.json bun.lock ./
-RUN npm install --frozen-lockfile || npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
 # Stage 2: Build
 FROM node:22-alpine AS builder

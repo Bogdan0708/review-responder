@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 
 interface ResponseData {
   id: string;
+  version: number;
   draftText: string;
   finalText: string | null;
   generatedAt: string;
@@ -25,7 +26,7 @@ export default function ResponseEditor({
 }: ResponseEditorProps) {
   const router = useRouter();
   const [text, setText] = useState(
-    response?.finalText ?? response?.draftText ?? ""
+    response?.finalText ?? response?.draftText ?? "",
   );
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState<string | null>(null);
@@ -34,7 +35,9 @@ export default function ResponseEditor({
     text: string;
   } | null>(null);
 
-  const isActionable = ["pending", "draft_ready"].includes(reviewStatus);
+  const isActionable = ["pending", "draft_ready", "rejected"].includes(
+    reviewStatus,
+  );
   const hasUnsavedChanges =
     text !== (response?.finalText ?? response?.draftText ?? "");
 
@@ -47,6 +50,11 @@ export default function ResponseEditor({
       if (action === "approve") {
         res = await fetch(`/api/reviews/${reviewId}/approve`, {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            responseId: response!.id,
+            version: response!.version,
+          }),
         });
       } else if (action === "reject") {
         res = await fetch(`/api/reviews/${reviewId}/reject`, {
@@ -60,7 +68,11 @@ export default function ResponseEditor({
         res = await fetch(`/api/reviews/${reviewId}/response`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ responseId: response!.id, text }),
+          body: JSON.stringify({
+            responseId: response!.id,
+            version: response!.version,
+            text,
+          }),
         });
       } else {
         return;
@@ -144,6 +156,21 @@ export default function ResponseEditor({
         </div>
       )}
 
+      {reviewStatus === "reconciliation" && (
+        <p className="text-sm text-amber-700">
+          Publication is in progress or needs manual review. Check the current
+          Google reply before taking further action.
+        </p>
+      )}
+      {reviewStatus === "approved" && (
+        <button
+          onClick={() => handleAction("reject")}
+          disabled={loading !== null}
+          className="rounded-lg border px-3 py-2 text-sm"
+        >
+          Reject approval to revise this draft
+        </button>
+      )}
       {message && (
         <div
           className={`rounded-lg px-3 py-2 text-sm ${

@@ -39,7 +39,9 @@ function stubGenerateDraft(review: DemoReview): string {
 }
 
 async function main() {
-  console.log("Review Responder — offline demo (synthetic data, no accounts needed)\n");
+  console.log(
+    "Review Responder — offline demo (synthetic data, no accounts needed)\n",
+  );
 
   const store = new MemoryReviewStore();
   const google = new FakeGoogle();
@@ -49,14 +51,17 @@ async function main() {
     const draft = stubGenerateDraft(review);
     store.seedReview(
       { id: review.id, status: "draft_ready" },
-      { id: `resp-${review.id}`, draftText: draft }
+      { id: `resp-${review.id}`, draftText: draft },
     );
 
-    console.log(`Review from ${review.authorName} (${review.rating}★): "${review.reviewText}"`);
+    console.log(
+      `Review from ${review.authorName} (${review.rating}★): "${review.reviewText}"`,
+    );
     console.log(`  draft: "${draft}"`);
 
     try {
       const approved = await approveResponse({
+        version: 0,
         reviewId: review.id,
         responseId: `resp-${review.id}`,
         text: draft,
@@ -78,7 +83,9 @@ async function main() {
     console.log("");
   }
 
-  console.log("--- Idempotency check: publishing review 1 again must not publish twice ---");
+  console.log(
+    "--- Idempotency check: publishing review 1 again must not publish twice ---",
+  );
   const first = reviews[0] as DemoReview;
   const republishAttempt = await publishApproved({
     reviewId: first.id,
@@ -89,20 +96,23 @@ async function main() {
   });
   console.log(
     `Second publish call for "${first.id}" returned alreadyPosted=${Boolean(
-      republishAttempt.alreadyPosted
+      republishAttempt.alreadyPosted,
     )}; google.reply was called for it ${
       google.published.filter((p) => p.id === first.id).length
-    } time(s) in total.`
+    } time(s) in total.`,
   );
 
-  console.log("\n--- Concurrency check: two workers racing to publish one approved response ---");
+  console.log(
+    "\n--- Concurrency check: two workers racing to publish one approved response ---",
+  );
   const raceStore = new MemoryReviewStore();
   const raceGoogle = new FakeGoogle();
   raceStore.seedReview(
     { id: "race", status: "draft_ready" },
-    { id: "resp-race", draftText: "Thanks for the kind words!" }
+    { id: "resp-race", draftText: "Thanks for the kind words!" },
   );
   await approveResponse({
+    version: 0,
     reviewId: "race",
     responseId: "resp-race",
     text: "Thanks for the kind words!",
@@ -111,18 +121,29 @@ async function main() {
     store: raceStore,
   });
   const raced = await Promise.all([
-    publishApproved({ reviewId: "race", responseId: "resp-race", store: raceStore, google: raceGoogle }),
-    publishApproved({ reviewId: "race", responseId: "resp-race", store: raceStore, google: raceGoogle }),
+    publishApproved({
+      reviewId: "race",
+      responseId: "resp-race",
+      store: raceStore,
+      google: raceGoogle,
+    }),
+    publishApproved({
+      reviewId: "race",
+      responseId: "resp-race",
+      store: raceStore,
+      google: raceGoogle,
+    }),
   ]);
   console.log(
     `Two concurrent publishes: google.reply called ${raceGoogle.published.length} time(s), ` +
       `${raced.filter((r) => r.alreadyClaimed).length} caller(s) lost the claim, ` +
-      `${raceStore.audit.filter((a) => a.action === "response_posted").length} response_posted audit entry.`
+      `${raceStore.audit.filter((a) => a.action === "response_posted").length} response_posted audit entry.`,
   );
 
   console.log("\n--- Permission check: a viewer role cannot approve ---");
   try {
     await approveResponse({
+      version: 0,
       reviewId: reviews[1].id,
       responseId: `resp-${reviews[1].id}`,
       text: "irrelevant",
@@ -136,10 +157,14 @@ async function main() {
 
   console.log("\n--- Audit trail ---");
   for (const entry of store.audit) {
-    console.log(`  [${entry.createdAt}] ${entry.action} reviewId=${entry.reviewId} actor=${entry.actor}`);
+    console.log(
+      `  [${entry.createdAt}] ${entry.action} reviewId=${entry.reviewId} actor=${entry.actor}`,
+    );
   }
 
-  console.log(`\nDone. ${google.published.length} response(s) published via FakeGoogle.`);
+  console.log(
+    `\nDone. ${google.published.length} response(s) published via FakeGoogle.`,
+  );
 }
 
 main().catch((err) => {

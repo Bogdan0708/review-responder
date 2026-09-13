@@ -148,7 +148,7 @@ function shouldAutoApprove(review: Review, settings: Settings): boolean {
 | `/` | Stats overview, pending count, recent activity |
 | `/reviews` | Filterable list (platform, sentiment, status) |
 | `/reviews/[id]` | Detail view: review + draft + actions |
-| `/settings` | Brand voice, API keys, auto-approve toggle |
+| `/settings` | Brand voice and provider settings; human approval is mandatory |
 
 **Tech Stack:**
 - Next.js 14 (App Router)

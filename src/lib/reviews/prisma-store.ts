@@ -1,155 +1,176 @@
+import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db";
-import {
-  publishClaimTtlMs,
-  type ReviewStore,
-  type StoredReview,
-  type StoredResponse,
-  type AuditEntryInput,
-  type PublishClaim,
-} from "./approve";
-
-interface ResponseRow {
-  id: string;
-  draftText: string;
-  finalText: string | null;
-  approvedAt: Date | null;
-  postedAt: Date | null;
-  publishClaimedAt: Date | null;
+import type { Prisma } from "@/generated/prisma/client";
+import { TransitionConflict, type ReviewStore } from "./approve";
+type Tx = Prisma.TransactionClient;
+// All transitions acquire the parent row first. PostgreSQL holds its UPDATE
+// lock until commit, serializing even transitions on different response IDs.
+export async function lockReview(tx: Tx, reviewId: string) {
+  return tx.review.update({
+    where: { id: reviewId },
+    data: { version: { increment: 1 } },
+  });
 }
-
-function toStoredResponse(response: ResponseRow): StoredResponse {
-  return {
-    id: response.id,
-    draftText: response.draftText,
-    finalText: response.finalText,
-    approvedAt: response.approvedAt,
-    postedAt: response.postedAt,
-    publishClaimedAt: response.publishClaimedAt,
-  };
+export async function requireMutableReview(tx: Tx, reviewId: string) {
+  const review = await lockReview(tx, reviewId);
+  if (
+    ["posted", "reconciliation"].includes(review.status) ||
+    (await tx.response.findFirst({
+      where: {
+        reviewId,
+        OR: [{ postedAt: { not: null } }, { publishClaimedAt: { not: null } }],
+      },
+    }))
+  )
+    throw new TransitionConflict(
+      "Review is published or requires manual reconciliation",
+    );
+  return review;
 }
-
-/** ReviewStore implemented over the real Prisma client. */
-export function createPrismaReviewStore(): ReviewStore {
+export function createPrismaReviewStore(client = prisma): ReviewStore {
   return {
-    async getReview(id: string): Promise<StoredReview | null> {
-      const review = await prisma.review.findUnique({ where: { id } });
-      if (!review) return null;
-      return { id: review.id, status: review.status };
-    },
-
-    async getLatestResponse(reviewId: string): Promise<StoredResponse | null> {
-      const response = await prisma.response.findFirst({
+    getReview: (id) => client.review.findUnique({ where: { id } }),
+    getLatestResponse: (reviewId) =>
+      client.response.findFirst({
         where: { reviewId },
         orderBy: { generatedAt: "desc" },
-      });
-      if (!response) return null;
-      return toStoredResponse(response);
-    },
-
-    async getResponse(
-      reviewId: string,
-      responseId: string
-    ): Promise<StoredResponse | null> {
-      const response = await prisma.response.findFirst({
-        where: { id: responseId, reviewId },
-      });
-      if (!response) return null;
-      return toStoredResponse(response);
-    },
-
-    async markApproved(
-      reviewId: string,
-      responseId: string,
-      text: string
-    ): Promise<void> {
-      await prisma.$transaction([
-        prisma.response.update({
-          where: { id: responseId },
-          data: { approvedAt: new Date(), finalText: text },
-        }),
-        prisma.review.update({
+      }),
+    getResponse: (reviewId, id) =>
+      client.response.findFirst({ where: { id, reviewId } }),
+    async markApproved(reviewId, id, text, version, actor) {
+      await client.$transaction(async (tx) => {
+        await requireMutableReview(tx, reviewId);
+        const latest = await tx.response.findFirst({
+          where: { reviewId },
+          orderBy: [{ generatedAt: "desc" }, { id: "desc" }],
+        });
+        if (latest?.id !== id)
+          throw new TransitionConflict(
+            "Draft changed; refresh before approving",
+          );
+        const changed = await tx.response.updateMany({
+          where: {
+            id,
+            reviewId,
+            version,
+            approvedAt: null,
+            postedAt: null,
+            publishClaimedAt: null,
+            publicationState: "idle",
+          },
+          data: {
+            approvedAt: new Date(),
+            approvedText: text,
+            finalText: text,
+            version: { increment: 1 },
+          },
+        });
+        if (changed.count !== 1)
+          throw new TransitionConflict(
+            "Response changed or is already approved; refresh",
+          );
+        await tx.review.update({
           where: { id: reviewId },
           data: { status: "approved" },
-        }),
-      ]);
+        });
+        await tx.auditLog.create({
+          data: {
+            reviewId,
+            action: "response_approved",
+            actor,
+            details: { responseId: id, approvedText: text, version },
+          },
+        });
+      });
     },
-
-    async markPosted(reviewId: string, responseId: string): Promise<void> {
-      await prisma.$transaction([
-        prisma.response.update({
-          where: { id: responseId },
-          data: { postedAt: new Date() },
-        }),
-        prisma.review.update({
+    async claimForPublish(reviewId, id, actor) {
+      return client.$transaction(async (tx) => {
+        const review = await lockReview(tx, reviewId);
+        if (review.status !== "approved") return { claimed: false };
+        if (
+          await tx.response.findFirst({
+            where: {
+              reviewId,
+              OR: [
+                { postedAt: { not: null } },
+                { publishClaimedAt: { not: null } },
+              ],
+            },
+          })
+        )
+          return { claimed: false };
+        const token = randomUUID();
+        const changed = await tx.response.updateMany({
+          where: {
+            id,
+            reviewId,
+            approvedAt: { not: null },
+            approvedText: { not: null },
+            postedAt: null,
+            publishClaimedAt: null,
+            publicationState: "idle",
+          },
+          data: {
+            publishClaimedAt: new Date(),
+            publicationToken: token,
+            publicationState: "reconciliation",
+            version: { increment: 1 },
+          },
+        });
+        if (changed.count !== 1) return { claimed: false };
+        await tx.review.update({
+          where: { id: reviewId },
+          data: { status: "reconciliation" },
+        });
+        await tx.auditLog.create({
+          data: {
+            reviewId,
+            action: "response_post_attempt_started",
+            actor,
+            details: { responseId: id, token },
+          },
+        });
+        return { claimed: true, token };
+      });
+    },
+    async markPosted(reviewId, id, token, actor) {
+      await client.$transaction(async (tx) => {
+        await lockReview(tx, reviewId);
+        const changed = await tx.response.updateMany({
+          where: {
+            id,
+            reviewId,
+            publicationToken: token,
+            publicationState: "reconciliation",
+            postedAt: null,
+          },
+          data: {
+            postedAt: new Date(),
+            publicationState: "posted",
+            version: { increment: 1 },
+          },
+        });
+        if (changed.count !== 1)
+          throw new TransitionConflict("Publication token is no longer valid");
+        await tx.review.update({
           where: { id: reviewId },
           data: { status: "posted" },
-        }),
-      ]);
-    },
-
-    /**
-     * A conditional UPDATE is the whole concurrency control: the row is only
-     * claimed if it is approved, unposted and either unclaimed or holding a
-     * claim older than the TTL. Postgres serialises the competing updates, so
-     * exactly one caller sees count === 1 and goes on to call Google.
-     *
-     * It runs as two statements so the caller can tell a fresh claim from the
-     * takeover of a stale one (which is audited); each statement is itself
-     * atomic, so the race is still decided by the database.
-     */
-    async claimForPublish(
-      reviewId: string,
-      responseId: string
-    ): Promise<PublishClaim> {
-      const now = new Date();
-
-      const fresh = await prisma.response.updateMany({
-        where: {
-          id: responseId,
-          reviewId,
-          approvedAt: { not: null },
-          postedAt: null,
-          publishClaimedAt: null,
-        },
-        data: { publishClaimedAt: now },
-      });
-      if (fresh.count === 1) return { claimed: true, reclaimed: false };
-
-      // Nobody holds an unclaimed row: either publication is genuinely in
-      // flight, or a previous run died holding the claim.
-      const staleBefore = new Date(now.getTime() - publishClaimTtlMs());
-      const stale = await prisma.response.updateMany({
-        where: {
-          id: responseId,
-          reviewId,
-          approvedAt: { not: null },
-          postedAt: null,
-          publishClaimedAt: { lt: staleBefore },
-        },
-        data: { publishClaimedAt: now },
-      });
-      return { claimed: stale.count === 1, reclaimed: stale.count === 1 };
-    },
-
-    async releaseClaim(reviewId: string, responseId: string): Promise<void> {
-      await prisma.response.updateMany({
-        where: {
-          id: responseId,
-          reviewId,
-          postedAt: null,
-          publishClaimedAt: { not: null },
-        },
-        data: { publishClaimedAt: null },
+        });
+        await tx.auditLog.create({
+          data: {
+            reviewId,
+            action: "response_posted",
+            actor,
+            details: { responseId: id, token },
+          },
+        });
       });
     },
-
-    async writeAudit(entry: AuditEntryInput): Promise<void> {
-      await prisma.auditLog.create({
+    async writeAudit(entry) {
+      await client.auditLog.create({
         data: {
-          reviewId: entry.reviewId,
-          action: entry.action,
-          actor: entry.actor,
-          details: entry.details ?? undefined,
+          ...entry,
+          details: entry.details as Prisma.InputJsonValue | undefined,
         },
       });
     },

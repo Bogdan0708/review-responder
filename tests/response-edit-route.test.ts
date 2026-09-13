@@ -12,7 +12,9 @@ vi.mock("@/lib/google/auth", () => ({
   getAccessToken: vi.fn(async () => "fake-token"),
   clearTokenCache: vi.fn(),
 }));
-vi.mock("@/lib/webhooks/notify", () => ({ notifyWebhook: vi.fn(async () => undefined) }));
+vi.mock("@/lib/webhooks/notify", () => ({
+  notifyWebhook: vi.fn(async () => undefined),
+}));
 
 async function approve(cookie: string) {
   const { POST } = await import("@/app/api/reviews/[id]/approve/route");
@@ -26,10 +28,17 @@ async function editResponse(cookie: string, text: string) {
   return PUT(
     new NextRequest("http://localhost/api/reviews/r1/response", {
       method: "PUT",
-      headers: new Headers({ cookie: `${COOKIE_NAME}=${cookie}`, "content-type": "application/json" }),
-      body: JSON.stringify({ responseId: "resp-1", text }),
+      headers: new Headers({
+        cookie: `${COOKIE_NAME}=${cookie}`,
+        "content-type": "application/json",
+      }),
+      body: JSON.stringify({
+        responseId: "resp-1",
+        text,
+        version: fakePrisma.responses[0].version ?? 0,
+      }),
     }),
-    { params: Promise.resolve({ id: "r1" }) }
+    { params: Promise.resolve({ id: "r1" }) },
   );
 }
 
@@ -43,6 +52,10 @@ async function reject(cookie: string) {
 function req(cookie: string, url: string) {
   return new NextRequest(url, {
     method: "POST",
+    body: JSON.stringify({
+      responseId: "resp-1",
+      version: fakePrisma.responses[0].version ?? 0,
+    }),
     headers: new Headers({ cookie: `${COOKIE_NAME}=${cookie}` }),
   });
 }
@@ -54,7 +67,13 @@ describe("approved text is immutable until the review is rejected", () => {
     process.env.GOOGLE_ACCOUNT_ID = "acct";
     process.env.GOOGLE_LOCATION_ID = "loc";
     fakePrisma.reviews = [
-      { id: "r1", platform: "google", status: "draft_ready", externalId: "ext-1", authorName: "Ana" },
+      {
+        id: "r1",
+        platform: "google",
+        status: "draft_ready",
+        externalId: "ext-1",
+        authorName: "Ana",
+      },
     ];
     fakePrisma.responses = [
       {
@@ -80,9 +99,14 @@ describe("approved text is immutable until the review is rejected", () => {
 
     expect((await approve(cookie)).status).toBe(200);
 
-    const edit = await editResponse(cookie, "Sneaky text that was never approved");
+    const edit = await editResponse(
+      cookie,
+      "Sneaky text that was never approved",
+    );
     expect(edit.status).toBe(409);
-    await expect(edit.json()).resolves.toMatchObject({ error: expect.stringMatching(/approved/i) });
+    await expect(edit.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/approved/i),
+    });
     expect(fakePrisma.responses[0].finalText).toBe("Text the owner approved");
 
     const { postPendingGoogleResponses } = await import("@/lib/google/respond");
@@ -90,7 +114,9 @@ describe("approved text is immutable until the review is rejected", () => {
 
     expect(result).toMatchObject({ posted: 1, failed: 0 });
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({ comment: "Text the owner approved" });
+    expect(JSON.parse(String(init.body))).toEqual({
+      comment: "Text the owner approved",
+    });
   });
 
   it("allows editing again once the review is rejected, which clears the approval", async () => {
@@ -108,7 +134,10 @@ describe("approved text is immutable until the review is rejected", () => {
 
     // A rejected (unapproved) response is not publishable.
     const { postPendingGoogleResponses } = await import("@/lib/google/respond");
-    expect(await postPendingGoogleResponses()).toMatchObject({ posted: 0, failed: 0 });
+    expect(await postPendingGoogleResponses()).toMatchObject({
+      posted: 0,
+      failed: 0,
+    });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -120,7 +149,7 @@ describe("approved text is immutable until the review is rejected", () => {
     const edit = await editResponse(cookie, "too late");
     expect(edit.status).toBe(409);
     await expect(edit.json()).resolves.toMatchObject({
-      error: expect.stringMatching(/already been published/i),
+      error: expect.stringMatching(/published/i),
     });
   });
 });

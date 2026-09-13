@@ -32,6 +32,7 @@ export default async function ReviewDetailPage({ params }: PageProps) {
   const serializedResponse = latestResponse
     ? {
         id: latestResponse.id,
+        version: latestResponse.version,
         draftText: latestResponse.draftText,
         finalText: latestResponse.finalText,
         generatedAt: latestResponse.generatedAt.toISOString(),
@@ -116,9 +117,7 @@ export default async function ReviewDetailPage({ params }: PageProps) {
                 })}
               </span>
               {(review.topics as string[]).length > 0 && (
-                <span>
-                  Topics: {(review.topics as string[]).join(", ")}
-                </span>
+                <span>Topics: {(review.topics as string[]).join(", ")}</span>
               )}
             </div>
           </div>

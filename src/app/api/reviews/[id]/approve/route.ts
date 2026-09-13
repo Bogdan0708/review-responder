@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireSession } from "@/lib/api-session";
-import { approveResponse, publishApproved } from "@/lib/reviews/approve";
+import {
+  approveResponse,
+  publishApproved,
+  TransitionConflict,
+} from "@/lib/reviews/approve";
 import { createPrismaReviewStore } from "@/lib/reviews/prisma-store";
 import { createGoogleReplyClient } from "@/lib/google/respond";
 
@@ -15,7 +19,7 @@ import { createGoogleReplyClient } from "@/lib/google/respond";
  */
 export async function POST(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const guard = await requireSession(request);
   if (guard.error) return guard.error;
@@ -23,6 +27,16 @@ export async function POST(
 
   try {
     const { id } = await params;
+    const { responseId, version } = await request.json();
+    if (
+      typeof responseId !== "string" ||
+      !Number.isInteger(version) ||
+      version < 0
+    )
+      return NextResponse.json(
+        { error: "responseId and nonnegative integer version are required" },
+        { status: 400 },
+      );
     const review = await prisma.review.findUnique({
       where: { id },
       include: { responses: { orderBy: { generatedAt: "desc" }, take: 1 } },
@@ -33,10 +47,16 @@ export async function POST(
     }
 
     const latestResponse = review.responses[0];
+    if (latestResponse && latestResponse.id !== responseId) {
+      return NextResponse.json(
+        { error: "Draft changed; refresh before approving" },
+        { status: 409 },
+      );
+    }
     if (!latestResponse) {
       return NextResponse.json(
         { error: "No response to approve" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -46,14 +66,14 @@ export async function POST(
     const approved = await approveResponse({
       reviewId: id,
       responseId: latestResponse.id,
+      version,
       text: latestResponse.finalText ?? latestResponse.draftText,
       actor: session.actor,
       role: session.role,
       store,
     });
 
-    const publishNow =
-      new URL(request.url).searchParams.get("publish") === "1";
+    const publishNow = new URL(request.url).searchParams.get("publish") === "1";
 
     if (!publishNow) {
       return NextResponse.json({
@@ -80,10 +100,14 @@ export async function POST(
       posted: result.posted,
     });
   } catch (err) {
+    if (err instanceof TransitionConflict)
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    if (err instanceof SyntaxError)
+      return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
     console.error("Error approving response:", err);
     return NextResponse.json(
       { error: "Internal server error" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
