@@ -14,7 +14,7 @@ export async function GET() {
     console.error("Error fetching settings:", err);
     return NextResponse.json(
       { error: "Internal server error" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
@@ -28,6 +28,15 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: "key is required" }, { status: 400 });
     }
 
+    if (key === "auto_approve") {
+      return NextResponse.json(
+        {
+          error:
+            "Automatic approval is retired; every response requires human approval",
+        },
+        { status: 400 },
+      );
+    }
     await prisma.setting.upsert({
       where: { key },
       update: { value: value as Prisma.InputJsonValue },
@@ -39,7 +48,7 @@ export async function PUT(request: NextRequest) {
     console.error("Error updating setting:", err);
     return NextResponse.json(
       { error: "Internal server error" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

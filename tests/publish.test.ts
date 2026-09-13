@@ -7,7 +7,9 @@ import { createFakePrisma, type FakePrisma } from "./helpers/fake-prisma";
 
 const fakePrisma = createFakePrisma();
 vi.mock("@/lib/db", () => ({ prisma: fakePrisma }));
-vi.mock("@/lib/webhooks/notify", () => ({ notifyWebhook: vi.fn(async () => undefined) }));
+vi.mock("@/lib/webhooks/notify", () => ({
+  notifyWebhook: vi.fn(async () => undefined),
+}));
 vi.mock("@/lib/google/auth", () => ({
   getAccessToken: vi.fn(async () => "fake-token"),
   clearTokenCache: vi.fn(),
@@ -18,7 +20,7 @@ function approvedStore(text = "Approved text"): MemoryReviewStore {
   const now = new Date().toISOString();
   store.seedReview(
     { id: "r1", status: "approved" },
-    { id: "resp-1", draftText: "Draft text", finalText: text, approvedAt: now }
+    { id: "resp-1", draftText: "Draft text", finalText: text, approvedAt: now },
   );
   return store;
 }
@@ -46,7 +48,9 @@ describe("publishApproved — publication invariants", () => {
     ]);
 
     expect(calls).toBe(1);
-    expect(store.audit.filter((a) => a.action === "response_posted")).toHaveLength(1);
+    expect(
+      store.audit.filter((a) => a.action === "response_posted"),
+    ).toHaveLength(1);
     expect(results.filter((r) => r.posted)).toHaveLength(1);
     expect(results.filter((r) => r.alreadyClaimed)).toHaveLength(1);
   });
@@ -56,7 +60,12 @@ describe("publishApproved — publication invariants", () => {
     const google = new FakeGoogle();
 
     // A caller-supplied text has nowhere to go: publishApproved takes no text.
-    const result = await publishApproved({ reviewId: "r1", responseId: "resp-1", store, google });
+    const result = await publishApproved({
+      reviewId: "r1",
+      responseId: "resp-1",
+      store,
+      google,
+    });
 
     expect(result.publishedText).toBe("Approved text");
     expect(google.published).toEqual([{ id: "r1", text: "Approved text" }]);
@@ -64,11 +73,19 @@ describe("publishApproved — publication invariants", () => {
 
   it("publishes the approved response even after a newer draft is regenerated", async () => {
     const store = approvedStore("Approved text");
-    store.addResponse("r1", { id: "resp-2", draftText: "Regenerated draft, never approved" });
+    store.addResponse("r1", {
+      id: "resp-2",
+      draftText: "Regenerated draft, never approved",
+    });
     expect((await store.getLatestResponse("r1"))?.id).toBe("resp-2");
 
     const google = new FakeGoogle();
-    const result = await publishApproved({ reviewId: "r1", responseId: "resp-1", store, google });
+    const result = await publishApproved({
+      reviewId: "r1",
+      responseId: "resp-1",
+      store,
+      google,
+    });
 
     expect(result.responseId).toBe("resp-1");
     expect(google.published).toEqual([{ id: "r1", text: "Approved text" }]);
@@ -77,66 +94,82 @@ describe("publishApproved — publication invariants", () => {
 
   it("refuses to publish a response that was never approved", async () => {
     const store = new MemoryReviewStore();
-    store.seedReview({ id: "r1", status: "draft_ready" }, { id: "resp-1", draftText: "Draft" });
+    store.seedReview(
+      { id: "r1", status: "draft_ready" },
+      { id: "resp-1", draftText: "Draft" },
+    );
     const google = new FakeGoogle();
 
     await expect(
-      publishApproved({ reviewId: "r1", responseId: "resp-1", store, google })
+      publishApproved({ reviewId: "r1", responseId: "resp-1", store, google }),
     ).rejects.toThrow(/not approved/);
     expect(google.published).toHaveLength(0);
   });
 
-  it("leaves postedAt null and releases the claim when google.reply fails", async () => {
+  it("leaves a durable fence when google.reply fails", async () => {
     const store = approvedStore();
     const google = new FakeGoogle();
     google.failNext("r1");
 
     await expect(
-      publishApproved({ reviewId: "r1", responseId: "resp-1", store, google })
+      publishApproved({ reviewId: "r1", responseId: "resp-1", store, google }),
     ).rejects.toThrow(/Failed to publish/);
 
     const response = await store.getResponse("r1", "resp-1");
     expect(response?.postedAt).toBeNull();
-    expect(response?.publishClaimedAt).toBeNull();
-    expect(store.audit.some((a) => a.action === "response_post_failed")).toBe(true);
+    expect(response?.publishClaimedAt).not.toBeNull();
+    expect(store.audit.some((a) => a.action === "response_post_failed")).toBe(
+      true,
+    );
 
-    // The released claim means a later retry can publish.
-    await publishApproved({ reviewId: "r1", responseId: "resp-1", store, google });
-    expect(google.published).toHaveLength(1);
+    // An uncertain result must not be retried.
+    await publishApproved({
+      reviewId: "r1",
+      responseId: "resp-1",
+      store,
+      google,
+    });
+    expect(google.published).toHaveLength(0);
   });
 
   it("audits response_post_unreconciled when Google succeeded but the database write failed", async () => {
     const store = approvedStore();
-    vi.spyOn(store, "markPosted").mockRejectedValueOnce(new Error("connection terminated"));
+    vi.spyOn(store, "markPosted").mockRejectedValueOnce(
+      new Error("connection terminated"),
+    );
     const google = new FakeGoogle();
 
     await expect(
-      publishApproved({ reviewId: "r1", responseId: "resp-1", store, google })
+      publishApproved({ reviewId: "r1", responseId: "resp-1", store, google }),
     ).rejects.toThrow(/unreconciled/i);
 
-    const entry = store.audit.find((a) => a.action === "response_post_unreconciled");
+    const entry = store.audit.find(
+      (a) => a.action === "response_post_unreconciled",
+    );
     expect(entry).toBeDefined();
-    expect(entry?.details).toMatchObject({ responseId: "resp-1", error: "connection terminated" });
+    expect(entry?.details).toMatchObject({
+      responseId: "resp-1",
+      error: "connection terminated",
+    });
     expect(google.published).toHaveLength(1);
     expect(store.audit.some((a) => a.action === "response_posted")).toBe(false);
   });
 
-  it("reclaims a stale claim left by a crashed run and publishes exactly once", async () => {
+  it("never reclaims a stale claim after a crashed run", async () => {
     const store = approvedStore();
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    // A previous run claimed the response and died before marking it posted.
-    store.patchResponse("r1", "resp-1", { publishClaimedAt: thirtyDaysAgo });
-
+    store.patchResponse("r1", "resp-1", {
+      publishClaimedAt: new Date(0).toISOString(),
+    });
     const google = new FakeGoogle();
-    const result = await publishApproved({ reviewId: "r1", responseId: "resp-1", store, google });
-
-    expect(result.posted).toBe(true);
-    expect(google.published).toEqual([{ id: "r1", text: "Approved text" }]);
-    expect((await store.getResponse("r1", "resp-1"))?.postedAt).not.toBeNull();
-    expect(store.audit.filter((a) => a.action === "response_posted")).toHaveLength(1);
-    const reclaim = store.audit.find((a) => a.action === "response_post_claim_reclaimed");
-    expect(reclaim).toBeDefined();
-    expect(reclaim?.details).toMatchObject({ responseId: "resp-1" });
+    expect(
+      await publishApproved({
+        reviewId: "r1",
+        responseId: "resp-1",
+        store,
+        google,
+      }),
+    ).toMatchObject({ posted: false, alreadyClaimed: true });
+    expect(google.published).toHaveLength(0);
   });
 
   it("does not touch a claim that is still within the TTL", async () => {
@@ -145,14 +178,21 @@ describe("publishApproved — publication invariants", () => {
     store.patchResponse("r1", "resp-1", { publishClaimedAt: oneMinuteAgo });
 
     const google = new FakeGoogle();
-    const result = await publishApproved({ reviewId: "r1", responseId: "resp-1", store, google });
+    const result = await publishApproved({
+      reviewId: "r1",
+      responseId: "resp-1",
+      store,
+      google,
+    });
 
     expect(result).toMatchObject({ posted: false, alreadyClaimed: true });
     expect(google.published).toHaveLength(0);
-    expect((await store.getResponse("r1", "resp-1"))?.publishClaimedAt).toBe(oneMinuteAgo);
+    expect((await store.getResponse("r1", "resp-1"))?.publishClaimedAt).toBe(
+      oneMinuteAgo,
+    );
   });
 
-  it("publishes the row as it stands once the claim is held, not the pre-claim read", async () => {
+  it("publishes the immutable approved snapshot even if mutable text is tampered with", async () => {
     const store = approvedStore("Text read before the claim");
     const google = new FakeGoogle();
 
@@ -161,64 +201,86 @@ describe("publishApproved — publication invariants", () => {
     const realClaim = store.claimForPublish.bind(store);
     vi.spyOn(store, "claimForPublish").mockImplementationOnce(
       async (reviewId: string, responseId: string): Promise<PublishClaim> => {
-        const claim = await realClaim(reviewId, responseId);
+        const claim = await realClaim(reviewId, responseId, "test");
         store.patchResponse(reviewId, responseId, {
-          finalText: "Text as it stands when the claim is held",
+          finalText: "Never-approved tampered text",
         });
         return claim;
-      }
+      },
     );
 
-    const result = await publishApproved({ reviewId: "r1", responseId: "resp-1", store, google });
+    const result = await publishApproved({
+      reviewId: "r1",
+      responseId: "resp-1",
+      store,
+      google,
+    });
 
-    expect(result.publishedText).toBe("Text as it stands when the claim is held");
+    expect(result.publishedText).toBe("Text read before the claim");
     expect(google.published).toEqual([
-      { id: "r1", text: "Text as it stands when the claim is held" },
+      { id: "r1", text: "Text read before the claim" },
     ]);
   });
 
-  it("releases the claim and refuses to publish if the approval is revoked before the claim", async () => {
+  it("retains the fence if approval is tampered with after the claim", async () => {
     const store = approvedStore();
     const google = new FakeGoogle();
 
     const realClaim = store.claimForPublish.bind(store);
     vi.spyOn(store, "claimForPublish").mockImplementationOnce(
       async (reviewId: string, responseId: string): Promise<PublishClaim> => {
-        const claim = await realClaim(reviewId, responseId);
+        const claim = await realClaim(reviewId, responseId, "test");
         store.patchResponse(reviewId, responseId, { approvedAt: null });
         return claim;
-      }
+      },
     );
 
     await expect(
-      publishApproved({ reviewId: "r1", responseId: "resp-1", store, google })
-    ).rejects.toThrow(/stopped being approved/);
+      publishApproved({ reviewId: "r1", responseId: "resp-1", store, google }),
+    ).rejects.toThrow(/manual reconciliation/);
     expect(google.published).toHaveLength(0);
-    expect((await store.getResponse("r1", "resp-1"))?.publishClaimedAt).toBeNull();
+    expect(
+      (await store.getResponse("r1", "resp-1"))?.publishClaimedAt,
+    ).not.toBeNull();
   });
 
   it("refuses to re-approve a response whose publication is already claimed", async () => {
     const store = approvedStore();
-    store.patchResponse("r1", "resp-1", { publishClaimedAt: new Date().toISOString() });
+    store.patchResponse("r1", "resp-1", {
+      publishClaimedAt: new Date().toISOString(),
+    });
 
     await expect(
       approveResponse({
+        version: 0,
         reviewId: "r1",
         responseId: "resp-1",
         text: "Changed while publishing",
         actor: "owner",
         role: "owner",
         store,
-      })
+      }),
     ).rejects.toThrow(/being published/);
-    expect((await store.getResponse("r1", "resp-1"))?.finalText).toBe("Approved text");
+    expect((await store.getResponse("r1", "resp-1"))?.finalText).toBe(
+      "Approved text",
+    );
   });
 
   it("never calls google again for a response that is already posted", async () => {
     const store = approvedStore();
     const google = new FakeGoogle();
-    await publishApproved({ reviewId: "r1", responseId: "resp-1", store, google });
-    const second = await publishApproved({ reviewId: "r1", responseId: "resp-1", store, google });
+    await publishApproved({
+      reviewId: "r1",
+      responseId: "resp-1",
+      store,
+      google,
+    });
+    const second = await publishApproved({
+      reviewId: "r1",
+      responseId: "resp-1",
+      store,
+      google,
+    });
 
     expect(second.alreadyPosted).toBe(true);
     expect(google.published).toHaveLength(1);
@@ -243,12 +305,31 @@ describe("postPendingGoogleResponses — the real worker over a mocked Prisma", 
   });
 
   it("publishes the pinned approved response for each approved review and skips posted ones", async () => {
-    const { postPendingGoogleResponses } = await import("../src/lib/google/respond");
+    const { postPendingGoogleResponses } =
+      await import("../src/lib/google/respond");
 
     fakePrisma.reviews = [
-      { id: "r1", platform: "google", status: "approved", externalId: "ext-1", authorName: "Ana" },
-      { id: "r2", platform: "google", status: "approved", externalId: "ext-2", authorName: "Ben" },
-      { id: "r3", platform: "tripadvisor", status: "approved", externalId: "ext-3", authorName: "Cy" },
+      {
+        id: "r1",
+        platform: "google",
+        status: "approved",
+        externalId: "ext-1",
+        authorName: "Ana",
+      },
+      {
+        id: "r2",
+        platform: "google",
+        status: "approved",
+        externalId: "ext-2",
+        authorName: "Ben",
+      },
+      {
+        id: "r3",
+        platform: "tripadvisor",
+        status: "approved",
+        externalId: "ext-3",
+        authorName: "Cy",
+      },
     ];
     fakePrisma.responses = [
       {
@@ -302,20 +383,39 @@ describe("postPendingGoogleResponses — the real worker over a mocked Prisma", 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/reviews/ext-1/reply");
-    expect(JSON.parse(String(init.body))).toEqual({ comment: "Approved reply for r1" });
+    expect(JSON.parse(String(init.body))).toEqual({
+      comment: "Approved reply for r1",
+    });
 
     const posted = fakePrisma.responses.find((r) => r.id === "resp-1a");
     expect(posted?.postedAt).not.toBeNull();
-    expect(fakePrisma.responses.find((r) => r.id === "resp-1b")?.postedAt).toBeNull();
-    expect(fakePrisma.auditEntries.some((a) => a.action === "response_posted")).toBe(true);
+    expect(
+      fakePrisma.responses.find((r) => r.id === "resp-1b")?.postedAt,
+    ).toBeNull();
+    expect(
+      fakePrisma.auditEntries.some((a) => a.action === "response_posted"),
+    ).toBe(true);
   });
 
-  it("counts a failing review without blocking the rest of the batch and releases its claim", async () => {
-    const { postPendingGoogleResponses } = await import("../src/lib/google/respond");
+  it("counts a failing review without blocking the rest of the batch and retains its fence", async () => {
+    const { postPendingGoogleResponses } =
+      await import("../src/lib/google/respond");
 
     fakePrisma.reviews = [
-      { id: "r1", platform: "google", status: "approved", externalId: "ext-1", authorName: "Ana" },
-      { id: "r2", platform: "google", status: "approved", externalId: "ext-2", authorName: "Ben" },
+      {
+        id: "r1",
+        platform: "google",
+        status: "approved",
+        externalId: "ext-1",
+        authorName: "Ana",
+      },
+      {
+        id: "r2",
+        platform: "google",
+        status: "approved",
+        externalId: "ext-2",
+        authorName: "Ben",
+      },
     ];
     fakePrisma.responses = [
       {
@@ -343,7 +443,7 @@ describe("postPendingGoogleResponses — the real worker over a mocked Prisma", 
     fetchMock.mockImplementation(async (url: string) =>
       String(url).includes("ext-1")
         ? new Response("boom", { status: 500 })
-        : new Response("{}", { status: 200 })
+        : new Response("{}", { status: 200 }),
     );
 
     const result = await postPendingGoogleResponses();
@@ -351,7 +451,50 @@ describe("postPendingGoogleResponses — the real worker over a mocked Prisma", 
     expect(result).toMatchObject({ posted: 1, failed: 1 });
     const failedRow = fakePrisma.responses.find((r) => r.id === "resp-1a");
     expect(failedRow?.postedAt).toBeNull();
-    expect(failedRow?.publishClaimedAt).toBeNull();
-    expect(fakePrisma.responses.find((r) => r.id === "resp-2a")?.postedAt).not.toBeNull();
+    expect(failedRow?.publishClaimedAt).not.toBeNull();
+    expect(
+      fakePrisma.responses.find((r) => r.id === "resp-2a")?.postedAt,
+    ).not.toBeNull();
   }, 20_000);
+  it("makes no adapter or cron retry after Google accepts but the connection drops", async () => {
+    fakePrisma.reviews = [
+      {
+        id: "r1",
+        platform: "google",
+        status: "approved",
+        externalId: "ext-1",
+        authorName: "Ana",
+      },
+    ];
+    fakePrisma.responses = [
+      {
+        id: "resp-1",
+        reviewId: "r1",
+        draftText: "original",
+        finalText: "approved",
+        approvedAt: new Date(),
+        generatedAt: new Date(),
+        postedAt: null,
+        publishClaimedAt: null,
+      },
+    ];
+    let acceptedWrites = 0;
+    fetchMock.mockImplementation(async () => {
+      acceptedWrites++;
+      throw new TypeError("connection reset after server accepted PUT");
+    });
+    const { postPendingGoogleResponses } =
+      await import("../src/lib/google/respond");
+    expect(await postPendingGoogleResponses()).toMatchObject({
+      failed: 1,
+      posted: 0,
+    });
+    expect(await postPendingGoogleResponses()).toMatchObject({
+      failed: 0,
+      posted: 0,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(acceptedWrites).toBe(1);
+    expect(fakePrisma.responses[0].publicationState).toBe("reconciliation");
+  });
 });

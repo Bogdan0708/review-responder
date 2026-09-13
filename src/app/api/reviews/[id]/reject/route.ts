@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { rejectReview } from "@/lib/reviews/transitions";
+import { TransitionConflict } from "@/lib/reviews/approve";
 import { requireSession } from "@/lib/api-session";
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   // Verified here as well as in the middleware (defence in depth); the actor
   // is derived from the session, not hard-coded.
@@ -20,32 +22,16 @@ export async function POST(
       return NextResponse.json({ error: "Review not found" }, { status: 404 });
     }
 
-    await prisma.$transaction([
-      prisma.review.update({
-        where: { id },
-        data: { status: "rejected" },
-      }),
-      // Clearing the approval is what makes the draft editable again, and
-      // stops the background publisher from picking the response up.
-      prisma.response.updateMany({
-        where: { reviewId: id, postedAt: null },
-        data: { approvedAt: null, publishClaimedAt: null },
-      }),
-      prisma.auditLog.create({
-        data: {
-          reviewId: id,
-          action: "response_rejected",
-          actor: session.actor,
-        },
-      }),
-    ]);
+    await rejectReview(id, session.actor);
 
     return NextResponse.json({ message: "Review rejected" });
   } catch (err) {
+    if (err instanceof TransitionConflict)
+      return NextResponse.json({ error: err.message }, { status: 409 });
     console.error("Error rejecting review:", err);
     return NextResponse.json(
       { error: "Internal server error" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
